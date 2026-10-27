@@ -128,7 +128,7 @@ Tarefas:
 3. Crie uma descricao vendedora em HTML: um paragrafo de gancho persuasivo,
    uma lista de 3 a 5 beneficios claros e especificacoes tecnicas simples.
 
-Responda EXCLUSIVAMENTE em JSON com as chaves:
+Responda EXCLUSIVAMENTE em JSON com las chaves:
 {{"eh_tendencia": true ou false, "titulo": "...", "descricao_html": "..."}}
 """
     corpo = {
@@ -147,11 +147,11 @@ Responda EXCLUSIVAMENTE em JSON com as chaves:
         return None
 
 
-def sugerir_tendencias(termo, registrar):
+def sugerir_tendencias(termo, registrar, lote_num):
     prompt = f"""
 Voce e um curador especialista em e-commerce e produtos de alta demanda.
-O usuario digitou o comando/termo: "{termo}".
-Gere exatamente 25 variacoes ou opçoes comerciais altamente precisas baseadas neste termo (por exemplo, se o termo for 'sofa', traga 25 tipos diferentes de sofás que vendem muito online, com nomes comerciais fortes e estimativas reais de preço de custo no Brasil).
+O usuario digitou o termo: "{termo}".
+Gere um lote (lote numero {lote_num}) de exatamente 25 variacoes ou opçoes comerciais altamente precisas e DIFERENTES baseadas neste termo (por exemplo, se o termo for 'sofa', traga 25 novos tipos de sofás que vendem muito online).
 
 Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com exatamente 25 itens e os seguintes campos para cada item:
 - "nome": Nome comercial forte e completo do produto
@@ -310,13 +310,14 @@ def novo():
 def sugerir():
     d = request.get_json(force=True, silent=True) or {}
     nicho = str(d.get("nicho", "")).strip()
+    lote = int(d.get("lote", 1))
     if not nicho:
         return jsonify(erro="Informe o termo ou nicho"), 400
     
     logs = []
     def reg(m): logs.append(m)
     
-    res = sugerir_tendencias(nicho, reg)
+    res = sugerir_tendencias(nicho, reg, lote)
     if not res or "produtos" not in res:
         return jsonify(erro="A IA nao conseguiu gerar sugestoes no momento."), 500
     return jsonify(produtos=res["produtos"])
@@ -691,6 +692,19 @@ PAGINA = r"""<!doctype html>
       cursor: pointer;
     }
     .btn-cadastrar-sugestao:active { transform: scale(0.95); }
+    
+    .btn-carregar-mais {
+      width: 100%;
+      background: transparent;
+      border: 2px dashed var(--primary);
+      color: var(--text);
+      padding: 12px;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 8px;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -709,7 +723,7 @@ PAGINA = r"""<!doctype html>
 
     <div class="tabs">
       <button class="tab-btn active" onclick="mudarAba('manual', this)">Manual</button>
-      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Sugestões IA (25 Opções)</button>
+      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Prateleira IA (Até 100+)</button>
     </div>
 
     <!-- ABA MANUAL -->
@@ -778,13 +792,14 @@ PAGINA = r"""<!doctype html>
           <label for="nicho">Comando / Termo de Pesquisa</label>
           <input type="text" id="nicho" placeholder="Ex: sofá, panela elétrica, suporte de celular...">
         </div>
-        <button type="button" id="btn-sugerir" class="btn-submit" onclick="buscarSugestoes()">
+        <button type="button" id="btn-sugerir" class="btn-submit" onclick="iniciarBusca()">
           <div class="spinner" id="spinner-sugerir"></div>
-          <span id="btn-sugerir-text">🔍 Gerar 25 Opções Precisas</span>
+          <span id="btn-sugerir-text">🔍 Gerar Lote de 25 Opções</span>
         </button>
       </div>
 
       <div id="lista-sugestoes"></div>
+      <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()">➕ Carregar Mais 25 Opções</button>
     </div>
 
   </div>
@@ -792,6 +807,8 @@ PAGINA = r"""<!doctype html>
   <script>
     const MARGEM = 2.2;
     const $ = id => document.getElementById(id);
+    let loteAtual = 1;
+    let termoAtual = "";
 
     function mudarAba(aba, el) {
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -811,34 +828,46 @@ PAGINA = r"""<!doctype html>
       }
     }
 
-    async function buscarSugestoes() {
-      const nicho = $("nicho").value.trim();
-      if (!nicho) {
+    function iniciarBusca() {
+      termoAtual = $("nicho").value.trim();
+      if (!termoAtual) {
         alert("Digite um termo para pesquisar.");
         return;
       }
-      $("btn-sugerir").disabled = true;
-      $("spinner-sugerir").style.display = "block";
-      $("btn-sugerir-text").textContent = "Buscando 25 opções (aguarde alguns segundos)...";
+      loteAtual = 1;
       $("lista-sugestoes").innerHTML = "";
+      executarBusca(false);
+    }
+
+    function carregarMais() {
+      loteAtual++;
+      executarBusca(true);
+    }
+
+    async function executarBusca(ehMais) {
+      $("btn-sugerir").disabled = true;
+      $("btn-carregar-mais").style.display = "none";
+      $("spinner-sugerir").style.display = "block";
+      $("btn-sugerir-text").textContent = `Buscando lote ${loteAtual} (25 opções)...`;
 
       try {
         const r = await fetch("/api/sugerir", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nicho })
+          body: JSON.stringify({ nicho: termoAtual, lote: loteAtual })
         });
         const d = await r.json();
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar 25 Opções Precisas";
+        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 25 Opções";
+        $("btn-carregar-mais").style.display = "block";
 
         if (!r.ok) {
           alert(d.erro || "Erro ao buscar sugestões.");
           return;
         }
 
-        let html = "";
+        let html = $("lista-sugestoes").innerHTML;
         (d.produtos || []).forEach((p) => {
           html += `
             <div class="sugestao-card">
@@ -852,11 +881,12 @@ PAGINA = r"""<!doctype html>
             </div>
           `;
         });
-        $("lista-sugestoes").innerHTML = html || "<p style='text-align:center; color:var(--text-muted);'>Nenhum produto encontrado.</p>";
+        $("lista-sugestoes").innerHTML = html;
       } catch (e) {
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar 25 Opções Precisas";
+        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 25 Opções";
+        $("btn-carregar-mais").style.display = "block";
         alert("Erro de conexão ao buscar sugestões.");
       }
     }
