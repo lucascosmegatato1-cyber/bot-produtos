@@ -147,6 +147,40 @@ Responda EXCLUSIVAMENTE em JSON com as chaves:
         return None
 
 
+def sugerir_tendencias(nicho, registrar):
+    prompt = f"""
+Voce e um curador de produtos virais de sucesso para lojas virtuais (dropshipping/e-commerce).
+Com base no nicho: "{nicho}", liste 3 produtos que sao tendencia atual, alta utilidade e excelente apelo de venda.
+
+Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com os seguintes campos para cada item:
+- "nome": Nome comercial forte do produto
+- "descricao_resumida": Breve explicacao do que e o produto
+- "custo_estimado": Um valor numerico realista de preco de custo em Reais (ex: 15.50)
+- "motivo_tendencia": Por que vende bem
+
+Exemplo de formato:
+{{
+  "produtos": [
+    {{"nome": "...", "descricao_resumida": "...", "custo_estimado": 15.00, "motivo_tendencia": "..."}}
+  ]
+}}
+"""
+    corpo = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+    dados = chamar_ia(corpo, registrar)
+    if dados is None:
+        return None
+    try:
+        texto = dados["candidates"][0]["content"]["parts"][0]["text"]
+        texto = texto.replace(CERCA + "json", "").replace(CERCA, "").strip()
+        return json.loads(texto)
+    except Exception as erro:
+        registrar("Erro ao interpretar sugestoes: " + str(erro))
+        return None
+
+
 # ---------- Yampi ----------
 def obter_ou_criar_marca(registrar):
     r = requests.get(BASE_YAMPI + "/brands", headers=CAB_YAMPI,
@@ -206,7 +240,7 @@ def processar(job_id, d):
         analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
         if analise is None:
             job["status"] = "erro"
-            reg("A IA nao respondeu. Tente de novo em alguns minutos.")
+            reg("A IA nao respondeu. Tente de novo.")
             return
 
         job["resultado_ia"] = analise
@@ -229,7 +263,7 @@ def processar(job_id, d):
         if ok:
             job["status"] = "ok"
             estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
-            reg("Sucesso! Produto cadastrado como " + estado + ". Preco: R$ " + format(venda, ".2f"))
+            reg("Sucesso! Cadastrado como " + estado + ". Preco: R$ " + format(venda, ".2f"))
         else:
             job["status"] = "erro"
     except Exception as erro:
@@ -270,12 +304,29 @@ def novo():
     return jsonify(id=job_id)
 
 
+@app.route("/api/sugerir", methods=["POST"])
+@exigir_senha
+def sugerir():
+    d = request.get_json(force=True, silent=True) or {}
+    nicho = str(d.get("nicho", "")).strip()
+    if not nicho:
+        return jsonify(erro="Informe o nicho ou palavra-chave"), 400
+    
+    logs = []
+    def reg(m): logs.append(m)
+    
+    res = sugerir_tendencias(nicho, reg)
+    if not res or "produtos" not in res:
+        return jsonify(erro="A IA nao conseguiu gerar sugestoes no momento."), 500
+    return jsonify(produtos=res["produtos"])
+
+
 @app.route("/api/status/<job_id>")
 @exigir_senha
 def status(job_id):
     job = JOBS.get(job_id)
     if not job:
-        return jsonify(erro="Tarefa nao encontrada (o servidor pode ter reiniciado)"), 404
+        return jsonify(erro="Tarefa nao encontrada"), 404
     return jsonify(job)
 
 
@@ -340,7 +391,7 @@ PAGINA = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Catálogo Pro - Gestor de Produtos IA</title>
+  <title>Catálogo Pro - IA & Yampi</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#6366f1">
   <link rel="apple-touch-icon" href="/icone-192.png">
@@ -418,6 +469,38 @@ PAGINA = r"""<!doctype html>
       font-weight: 600;
     }
 
+    /* Abas de navegação */
+    .tabs {
+      display: flex;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 4px;
+      gap: 4px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 10px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab-btn.active {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+
+    .tab-content { display: none; flex-direction: column; gap: 16px; }
+    .tab-content.active { display: flex; }
+
     .card {
       background-color: var(--card-bg);
       border: 1px solid var(--border);
@@ -426,9 +509,7 @@ PAGINA = r"""<!doctype html>
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
     }
 
-    .form-group {
-      margin-bottom: 16px;
-    }
+    .form-group { margin-bottom: 16px; }
 
     label {
       display: block;
@@ -585,17 +666,32 @@ PAGINA = r"""<!doctype html>
     .preview-title { font-size: 0.85rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
     .preview-content { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
 
-    .history-card { margin-top: 8px; }
-    .history-title { font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 10px; }
-    .history-item {
+    /* Estilo para sugestoes */
+    .sugestao-card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 12px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.85rem;
+      flex-direction: column;
+      gap: 10px;
     }
-    .history-item:last-child { border-bottom: none; }
+    .sugestao-titulo { font-size: 0.95rem; font-weight: 700; color: #fff; }
+    .sugestao-desc { font-size: 0.8rem; color: var(--text-muted); }
+    .sugestao-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+    .sugestao-preco { font-size: 0.9rem; font-weight: 700; color: var(--accent); }
+    .btn-cadastrar-sugestao {
+      background: var(--accent);
+      color: #064e3b;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .btn-cadastrar-sugestao:active { transform: scale(0.95); }
   </style>
 </head>
 <body>
@@ -612,67 +708,100 @@ PAGINA = r"""<!doctype html>
       <div class="badge-yampi">● Conectado</div>
     </div>
 
-    <div class="card">
-      <form id="bot-form" onsubmit="return false;">
-        <div class="form-group">
-          <label for="nome">Nome do Produto</label>
-          <input type="text" id="nome" placeholder="Ex: Mini Selador de Embalagens Portátil" required>
-        </div>
+    <!-- Abas de Navegação -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="mudarAba('manual', this)">Manual</button>
+      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Sugestões IA</button>
+    </div>
 
-        <div class="form-group">
-          <label for="descricao">Descrição Curta (Fornecedor / AliExpress)</label>
-          <textarea id="descricao" placeholder="Copie aqui os detalhes brutos do produto..."></textarea>
-        </div>
-
-        <div class="grid-2 form-group">
-          <div>
-            <label for="custo">Preço de Custo (R$)</label>
-            <input type="text" id="custo" inputmode="decimal" placeholder="12,50" required oninput="calcularVenda()">
+    <!-- ABA MANUAL -->
+    <div id="aba-manual" class="tab-content active">
+      <div class="card">
+        <form id="bot-form" onsubmit="return false;">
+          <div class="form-group">
+            <label for="nome">Nome do Produto</label>
+            <input type="text" id="nome" placeholder="Ex: Mini Selador de Embalagens Portátil" required>
           </div>
-          <div class="calc-box">
-            <span>Preço de Venda (2.2x)</span>
-            <strong id="preco-venda-preview">R$ 0,00</strong>
+
+          <div class="form-group">
+            <label for="descricao">Descrição Curta (Fornecedor / AliExpress)</label>
+            <textarea id="descricao" placeholder="Copie aqui os detalhes brutos do produto..."></textarea>
           </div>
-        </div>
 
+          <div class="grid-2 form-group">
+            <div>
+              <label for="custo">Preço de Custo (R$)</label>
+              <input type="text" id="custo" inputmode="decimal" placeholder="12,50" required oninput="calcularVenda()">
+            </div>
+            <div class="calc-box">
+              <span>Preço de Venda (2.2x)</span>
+              <strong id="preco-venda-preview">R$ 0,00</strong>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="sku">SKU (Opcional)</label>
+            <input type="text" id="sku" placeholder="Deixe vazio para gerar automático">
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-container">
+              <input type="checkbox" id="forcar">
+              <div class="custom-checkbox"></div>
+              <span style="font-size: 0.85rem; color: var(--text-muted);">Forçar cadastro mesmo se a IA reprovar</span>
+            </label>
+          </div>
+
+          <button type="button" id="enviar" class="btn-submit">
+            <div class="spinner" id="spinner"></div>
+            <span id="btn-text">Analisar & Cadastrar na Yampi</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- Status e Logs -->
+      <div class="card status-card" id="status-card">
+        <div class="status-header">
+          <div class="status-title" id="status-title">Processando...</div>
+          <div id="status-badge" style="font-size: 0.8rem; font-weight: 700;"></div>
+        </div>
+        <div class="logs-box" id="log-box">Iniciando análise com inteligência artificial...</div>
+
+        <div class="preview-box" id="preview-box" style="display: none;">
+          <div class="preview-title" id="preview-titulo"></div>
+          <div class="preview-content" id="preview-html"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ABA SUGESTÕES IA -->
+    <div id="aba-ia" class="tab-content">
+      <div class="card">
         <div class="form-group">
-          <label for="sku">SKU (Opcional)</label>
-          <input type="text" id="sku" placeholder="Deixe vazio para gerar automático">
+          <label for="nicho">Nicho ou Palavra-Chave de Tendência</label>
+          <input type="text" id="nicho" placeholder="Ex: Utensílios de cozinha inovadores, Gadgets de carro...">
         </div>
-
-        <div class="form-group">
-          <label class="checkbox-container">
-            <input type="checkbox" id="forcar">
-            <div class="custom-checkbox"></div>
-            <span style="font-size: 0.85rem; color: var(--text-muted);">Forçar cadastro mesmo se a IA reprovar</span>
-          </label>
-        </div>
-
-        <button type="button" id="enviar" class="btn-submit">
-          <div class="spinner" id="spinner"></div>
-          <span id="btn-text">Analisar & Cadastrar na Yampi</span>
+        <button type="button" id="btn-sugerir" class="btn-submit" onclick="buscarSugestoes()">
+          <div class="spinner" id="spinner-sugerir"></div>
+          <span id="btn-sugerir-text">🔍 Descobrir Produtos Virais com IA</span>
         </button>
-      </form>
+      </div>
+
+      <div id="lista-sugestoes"></div>
     </div>
 
-    <!-- Status e Logs -->
-    <div class="card status-card" id="status-card">
-      <div class="status-header">
-        <div class="status-title" id="status-title">Processando...</div>
-        <div id="status-badge" style="font-size: 0.8rem; font-weight: 700;"></div>
-      </div>
-      <div class="logs-box" id="log-box">Iniciando análise com inteligência artificial...</div>
-
-      <div class="preview-box" id="preview-box" style="display: none;">
-        <div class="preview-title" id="preview-titulo"></div>
-        <div class="preview-content" id="preview-html"></div>
-      </div>
-    </div>
   </div>
 
   <script>
     const MARGEM = 2.2;
     const $ = id => document.getElementById(id);
+
+    function mudarAba(aba, el) {
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      $("aba-" + aba).classList.add('active');
+      el.classList.add('active');
+    }
 
     function calcularVenda() {
       const valorStr = $("custo").value.replace(",", ".");
@@ -683,6 +812,65 @@ PAGINA = r"""<!doctype html>
       } else {
         $("preco-venda-preview").textContent = "R$ 0,00";
       }
+    }
+
+    async function buscarSugestoes() {
+      const nicho = $("nicho").value.trim();
+      if (!nicho) {
+        alert("Digite um nicho ou palavra-chave.");
+        return;
+      }
+      $("btn-sugerir").disabled = true;
+      $("spinner-sugerir").style.display = "block";
+      $("btn-sugerir-text").textContent = "Analisando tendências...";
+      $("lista-sugestoes").innerHTML = "";
+
+      try {
+        const r = await fetch("/api/sugerir", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nicho })
+        });
+        const d = await r.json();
+        $("btn-sugerir").disabled = false;
+        $("spinner-sugerir").style.display = "none";
+        $("btn-sugerir-text").textContent = "🔍 Descobrir Produtos Virais com IA";
+
+        if (!r.ok) {
+          alert(d.erro || "Erro ao buscar sugestões.");
+          return;
+        }
+
+        let html = "";
+        (d.produtos || []).forEach((p, idx) => {
+          html += `
+            <div class="sugestao-card">
+              <div class="sugestao-titulo">${p.nome}</div>
+              <div class="sugestao-desc">${p.descricao_resumida}</div>
+              <div style="font-size:0.75rem; color:#f59e0b;">💡 Motivo: ${p.motivo_tendencia}</div>
+              <div class="sugestao-footer">
+                <div class="sugestao-preco">Custo Est: R$ ${Number(p.custo_estimado).toFixed(2).replace('.', ',')}</div>
+                <button class="btn-cadastrar-sugestao" onclick="preencherEEnviar('${p.nome.replace(/'/g, "\\'")}', '${p.descricao_resumida.replace(/'/g, "\\'")}', ${p.custo_estimado})">🚀 Cadastrar</button>
+              </div>
+            </div>
+          `;
+        });
+        $("lista-sugestoes").innerHTML = html || "<p style='text-align:center; color:var(--text-muted);'>Nenhum produto encontrado.</p>";
+      } catch (e) {
+        $("btn-sugerir").disabled = false;
+        $("spinner-sugerir").style.display = "none";
+        $("btn-sugerir-text").textContent = "🔍 Descobrir Produtos Virais com IA";
+        alert("Erro de conexão ao buscar sugestões.");
+      }
+    }
+
+    function preencherEEnviar(nome, desc, custo) {
+      $("nome").value = nome;
+      $("descricao").value = desc;
+      $("custo").value = custo.toFixed(2).replace('.', ',');
+      calcularVenda();
+      mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
+      $("enviar").click();
     }
 
     $("enviar").onclick = async () => {
