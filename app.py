@@ -18,7 +18,7 @@ YAMPI_ALIAS = os.environ.get("YAMPI_ALIAS", "")
 YAMPI_USER_TOKEN = os.environ.get("YAMPI_USER_TOKEN", "")
 YAMPI_SECRET_KEY = os.environ.get("YAMPI_SECRET_KEY", "")
 SENHA_APP = os.environ.get("SENHA_APP", "")
-MARGEM_LUCRO = float(os.environ.get("MARGEM_LUCRO", "2.2"))
+MARGEM_LUCRO = 2.0  # Multiplicador exato de 2x solicitado
 NOME_MARCA = os.environ.get("NOME_MARCA", "Titia Flora")
 MODELO_PREFERIDO = os.environ.get("MODELO_PREFERIDO", "gemini-3.8-flash")
 PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
@@ -114,22 +114,20 @@ def chamar_ia(corpo, registrar, timeout_val=120):
 
 def analisar(nome, descricao, custo, registrar):
     prompt = f"""
-Voce e um especialista em E-commerce e Copywriting para produtos de sucesso.
-Responda sempre em portugues do Brasil, com acentuacao correta.
+Voce e um especialista em E-commerce e Copywriting. 
+Analise as informacoes brutas fornecidas (ou link/texto do produto original) e estruture um anuncio profissional em portugues do Brasil.
 
-Produto:
-- Nome bruto: {nome}
-- Descricao: {descricao}
-- Preco de custo: R$ {custo}
+Produto Bruto:
+- Nome/Link/Detalhes: {nome}
+- Descricao Original: {descricao}
+- Preco de Custo: R$ {custo}
 
 Tarefas:
-1. Avalie se e comercializavel e possui bom apelo de venda.
-2. Crie um titulo comercial altamente atraente e otimizado para SEO (maximo 60 caracteres).
-3. Crie uma descricao vendedora em HTML: um paragrafo de gancho persuasivo,
-   uma lista de 3 a 5 beneficios claros e especificacoes tecnicas simples.
+1. Crie um titulo comercial altamente atraente e otimizado (maximo 60 caracteres).
+2. Crie uma descricao vendedora completa em HTML estruturado (incluindo gancho persuasivo, beneficios detalhados extraidos do produto original e especificacoes tecnicas).
 
-Responda EXCLUSIVAMENTE em JSON com las chaves:
-{{"eh_tendencia": true ou false, "titulo": "...", "descricao_html": "..."}}
+Responda EXCLUSIVAMENTE em JSON com as chaves exatas:
+{{"eh_tendencia": true, "titulo": "...", "descricao_html": "..."}}
 """
     corpo = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -149,22 +147,14 @@ Responda EXCLUSIVAMENTE em JSON com las chaves:
 
 def sugerir_tendencias(termo, registrar, lote_num):
     prompt = f"""
-Voce e um curador especialista em e-commerce e produtos de alta demanda.
-O usuario digitou o termo: "{termo}".
-Gere um lote (lote numero {lote_num}) de exatamente 25 variacoes ou opçoes comerciais altamente precisas e DIFERENTES baseadas neste termo (por exemplo, se o termo for 'sofa', traga 25 novos tipos de sofás que vendem muito online).
+Voce e um curador especialista em e-commerce. O usuario pediu o termo: "{termo}".
+Gere o lote {lote_num} de exatamente 25 opçoes comerciais detalhadas baseadas neste termo.
 
-Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com exatamente 25 itens e os seguintes campos para cada item:
-- "nome": Nome comercial forte e completo do produto
-- "descricao_resumida": Breve explicacao das caracteristicas e diferenciais do modelo
-- "custo_estimado": Um valor numerico realista de preco de custo em Reais (ex: 350.00)
-- "motivo_tendencia": Por que este modelo especifico tem alta saida no e-commerce
-
-Exemplo de formato:
-{{
-  "produtos": [
-    {{"nome": "...", "descricao_resumida": "...", "custo_estimado": 150.00, "motivo_tendencia": "..."}}
-  ]
-}}
+Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com 25 itens contendo:
+- "nome": Nome comercial forte
+- "descricao_resumida": Descricao rica detalhando diferenciais e caracteristicas
+- "custo_estimado": Preco de custo realista em Reais (ex: 50.00)
+- "motivo_tendencia": Por que vende bem
 """
     corpo = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -229,42 +219,29 @@ def processar(job_id, d):
         job["log"].append(msg)
 
     try:
-        faltando = [n for n, v in (("CHAVE_GOOGLE", CHAVE_GOOGLE), ("YAMPI_ALIAS", YAMPI_ALIAS),
-                                   ("YAMPI_USER_TOKEN", YAMPI_USER_TOKEN),
-                                   ("YAMPI_SECRET_KEY", YAMPI_SECRET_KEY)) if not v]
-        if faltando:
-            job["status"] = "erro"
-            reg("Faltam variaveis de ambiente no Render: " + ", ".join(faltando))
-            return
-
-        reg("Analisando com a IA Gemini...")
+        reg("Analisando e estruturando informações com IA...")
         analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
         if analise is None:
             job["status"] = "erro"
-            reg("A IA nao respondeu. Tente de novo.")
+            reg("A IA nao respondeu. Tente novamente.")
             return
 
         job["resultado_ia"] = analise
 
-        if not analise.get("eh_tendencia") and not d["forcar"]:
-            job["status"] = "ignorado"
-            reg("A IA avaliou que o produto NAO e uma tendencia forte.")
-            return
-
         reg("Titulo gerado: " + str(analise.get("titulo")))
-        reg("Cadastrando na Yampi...")
+        reg("Cadastrando na Yampi com multiplicador 2x...")
         brand_id = obter_ou_criar_marca(reg)
         if brand_id is None:
             job["status"] = "erro"
             return
 
-        venda = d["custo"] * MARGEM_LUCRO
+        venda = d["custo"] * MARGEM_LUCRO  # Multiplicador exato de 2x
         ok = cadastrar(analise["titulo"], analise["descricao_html"], d["custo"],
                        venda, d["sku"], brand_id, reg)
         if ok:
             job["status"] = "ok"
             estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
-            reg("Sucesso! Cadastrado como " + estado + ". Preco: R$ " + format(venda, ".2f"))
+            reg(f"Sucesso! Cadastrado como {estado}. Preco de Venda (2x): R$ {venda:.2f}")
         else:
             job["status"] = "erro"
     except Exception as erro:
@@ -393,7 +370,7 @@ PAGINA = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Catálogo Pro - IA & Yampi</title>
+  <title>Catálogo Pro - Multiplicador 2x</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#6366f1">
   <link rel="apple-touch-icon" href="/icone-192.png">
@@ -558,44 +535,6 @@ PAGINA = r"""<!doctype html>
     .calc-box span { font-size: 0.75rem; color: var(--text-muted); }
     .calc-box strong { font-size: 1.1rem; color: var(--accent); }
 
-    .checkbox-container {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      cursor: pointer;
-      user-select: none;
-      margin-top: 4px;
-    }
-
-    .checkbox-container input { width: auto; display: none; }
-
-    .custom-checkbox {
-      width: 20px;
-      height: 20px;
-      border: 2px solid var(--border);
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s;
-      background: var(--input-bg);
-    }
-
-    .checkbox-container input:checked + .custom-checkbox {
-      background: var(--primary);
-      border-color: var(--primary);
-    }
-
-    .custom-checkbox::after {
-      content: '✓';
-      color: white;
-      font-size: 12px;
-      font-weight: bold;
-      display: none;
-    }
-
-    .checkbox-container input:checked + .custom-checkbox::after { display: block; }
-
     .btn-submit {
       width: 100%;
       background: linear-gradient(135deg, var(--primary), var(--primary-hover));
@@ -703,7 +642,6 @@ PAGINA = r"""<!doctype html>
       font-weight: 700;
       cursor: pointer;
       margin-top: 8px;
-      display: none;
     }
   </style>
 </head>
@@ -715,38 +653,38 @@ PAGINA = r"""<!doctype html>
         <div class="brand-icon">⚡</div>
         <div class="brand-title">
           <h1>Catálogo Pro</h1>
-          <p>Automação Yampi + Gemini IA</p>
+          <p>Multiplicador 2x + IA Gemini</p>
         </div>
       </div>
       <div class="badge-yampi">● Conectado</div>
     </div>
 
     <div class="tabs">
-      <button class="tab-btn active" onclick="mudarAba('manual', this)">Manual</button>
-      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Prateleira IA (Até 100+)</button>
+      <button class="tab-btn active" onclick="mudarAba('manual', this)">Importar / Manual</button>
+      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Prateleira IA</button>
     </div>
 
-    <!-- ABA MANUAL -->
+    <!-- ABA MANUAL / IMPORTAR LINK -->
     <div id="aba-manual" class="tab-content active">
       <div class="card">
         <form id="bot-form" onsubmit="return false;">
           <div class="form-group">
-            <label for="nome">Nome do Produto</label>
-            <input type="text" id="nome" placeholder="Ex: Sofá Retrátil e Reclinável 3 Lugares" required>
+            <label for="nome">Nome ou Link do Produto Original (Fornecedor)</label>
+            <input type="text" id="nome" placeholder="Cole o link do AliExpress/Shopee ou nome do produto..." required>
           </div>
 
           <div class="form-group">
-            <label for="descricao">Descrição Curta (Fornecedor / AliExpress)</label>
-            <textarea id="descricao" placeholder="Copie aqui os detalhes brutos do produto..."></textarea>
+            <label for="descricao">Detalhes, Especificações ou Avaliações Originais</label>
+            <textarea id="descricao" placeholder="Cole aqui os detalhes, ficha técnica ou o texto completo da página do fornecedor..."></textarea>
           </div>
 
           <div class="grid-2 form-group">
             <div>
               <label for="custo">Preço de Custo (R$)</label>
-              <input type="text" id="custo" inputmode="decimal" placeholder="450,00" required oninput="calcularVenda()">
+              <input type="text" id="custo" inputmode="decimal" placeholder="50,00" required oninput="calcularVenda()">
             </div>
             <div class="calc-box">
-              <span>Preço de Venda (2.2x)</span>
+              <span>Preço de Venda (2x Exato)</span>
               <strong id="preco-venda-preview">R$ 0,00</strong>
             </div>
           </div>
@@ -756,17 +694,9 @@ PAGINA = r"""<!doctype html>
             <input type="text" id="sku" placeholder="Deixe vazio para gerar automático">
           </div>
 
-          <div class="form-group">
-            <label class="checkbox-container">
-              <input type="checkbox" id="forcar">
-              <div class="custom-checkbox"></div>
-              <span style="font-size: 0.85rem; color: var(--text-muted);">Forçar cadastro mesmo se a IA reprovar</span>
-            </label>
-          </div>
-
           <button type="button" id="enviar" class="btn-submit">
             <div class="spinner" id="spinner"></div>
-            <span id="btn-text">Analisar & Cadastrar na Yampi</span>
+            <span id="btn-text">Processar & Cadastrar na Yampi (2x)</span>
           </button>
         </form>
       </div>
@@ -776,7 +706,7 @@ PAGINA = r"""<!doctype html>
           <div class="status-title" id="status-title">Processando...</div>
           <div id="status-badge" style="font-size: 0.8rem; font-weight: 700;"></div>
         </div>
-        <div class="logs-box" id="log-box">Iniciando análise com inteligência artificial...</div>
+        <div class="logs-box" id="log-box">Analisando dados do produto original...</div>
 
         <div class="preview-box" id="preview-box" style="display: none;">
           <div class="preview-title" id="preview-titulo"></div>
@@ -790,7 +720,7 @@ PAGINA = r"""<!doctype html>
       <div class="card">
         <div class="form-group">
           <label for="nicho">Comando / Termo de Pesquisa</label>
-          <input type="text" id="nicho" placeholder="Ex: sofá, panela elétrica, suporte de celular...">
+          <input type="text" id="nicho" placeholder="Ex: sofá, utilidades cozinha, gadgets...">
         </div>
         <button type="button" id="btn-sugerir" class="btn-submit" onclick="iniciarBusca()">
           <div class="spinner" id="spinner-sugerir"></div>
@@ -799,13 +729,13 @@ PAGINA = r"""<!doctype html>
       </div>
 
       <div id="lista-sugestoes"></div>
-      <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()">➕ Carregar Mais 25 Opções</button>
+      <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()" style="display:none;">➕ Carregar Mais 25 Opções</button>
     </div>
 
   </div>
 
   <script>
-    const MARGEM = 2.2;
+    const MARGEM = 2.0; // Multiplicador fixo de 2x
     const $ = id => document.getElementById(id);
     let loteAtual = 1;
     let termoAtual = "";
@@ -836,15 +766,15 @@ PAGINA = r"""<!doctype html>
       }
       loteAtual = 1;
       $("lista-sugestoes").innerHTML = "";
-      executarBusca(false);
+      executarBusca();
     }
 
     function carregarMais() {
       loteAtual++;
-      executarBusca(true);
+      executarBusca();
     }
 
-    async function executarBusca(ehMais) {
+    async function executarBusca() {
       $("btn-sugerir").disabled = true;
       $("btn-carregar-mais").style.display = "none";
       $("spinner-sugerir").style.display = "block";
@@ -873,9 +803,9 @@ PAGINA = r"""<!doctype html>
             <div class="sugestao-card">
               <div class="sugestao-titulo">${p.nome}</div>
               <div class="sugestao-desc">${p.descricao_resumida}</div>
-              <div style="font-size:0.75rem; color:#f59e0b;">💡 Por que vende: ${p.motivo_tendencia}</div>
+              <div style="font-size:0.75rem; color:#f59e0b;">💡 Destaque: ${p.motivo_tendencia}</div>
               <div class="sugestao-footer">
-                <div class="sugestao-preco">Custo Est: R$ ${Number(p.custo_estimado).toFixed(2).replace('.', ',')}</div>
+                <div class="sugestao-preco">Custo: R$ ${Number(p.custo_estimado).toFixed(2).replace('.', ',')} | Venda (2x): R$ ${(p.custo_estimado * 2).toFixed(2).replace('.', ',')}</div>
                 <button class="btn-cadastrar-sugestao" onclick="preencherEEnviar('${p.nome.replace(/'/g, "\\'")}', '${p.descricao_resumida.replace(/'/g, "\\'")}', ${p.custo_estimado})">🚀 Cadastrar</button>
               </div>
             </div>
@@ -905,7 +835,7 @@ PAGINA = r"""<!doctype html>
       const custo = $("custo").value.trim();
 
       if (!nome || !custo) {
-        alert("Por favor, preencha o nome do produto e o preço de custo.");
+        alert("Por favor, preencha o nome/link do produto e o preço de custo.");
         return;
       }
 
@@ -913,19 +843,18 @@ PAGINA = r"""<!doctype html>
         nome: nome,
         descricao: $("descricao").value.trim(),
         custo: custo,
-        sku: $("sku").value.trim(),
-        forcar: $("forcar").checked
+        sku: $("sku").value.trim()
       };
 
       $("enviar").disabled = true;
       $("spinner").style.display = "block";
-      $("btn-text").textContent = "Processando com IA...";
+      $("btn-text").textContent = "Processando e formatando...";
 
       $("status-card").style.display = "block";
-      $("status-title").textContent = "Analisando produto...";
+      $("status-title").textContent = "Copiando e estruturando dados...";
       $("status-badge").textContent = "⏳ RODANDO";
       $("status-badge").style.color = "var(--warning)";
-      $("log-box").textContent = "Conectando ao servidor e enviando dados para o Gemini...";
+      $("log-box").textContent = "Analisando ficha técnica e aplicando multiplicador 2x...";
       $("preview-box").style.display = "none";
 
       try {
@@ -983,10 +912,6 @@ PAGINA = r"""<!doctype html>
             $("status-title").textContent = "Produto Cadastrado com Sucesso!";
             $("status-badge").textContent = "✅ SUCESSO";
             $("status-badge").style.color = "var(--accent)";
-          } else if (d.status === "ignorado") {
-            $("status-title").textContent = "Produto Reprovado pela IA";
-            $("status-badge").textContent = "⚠️ REPROVADO";
-            $("status-badge").style.color = "var(--warning)";
           } else {
             $("status-title").textContent = "Falha no Cadastro";
             $("status-badge").textContent = "❌ ERRO";
@@ -1002,7 +927,7 @@ PAGINA = r"""<!doctype html>
     function resetBotao() {
       $("enviar").disabled = false;
       $("spinner").style.display = "none";
-      $("btn-text").textContent = "Analisar & Cadastrar na Yampi";
+      $("btn-text").textContent = "Processar & Cadastrar na Yampi (2x)";
     }
 
     if ("serviceWorker" in navigator) {
