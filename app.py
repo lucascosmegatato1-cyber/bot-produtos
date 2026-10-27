@@ -126,7 +126,7 @@ Tarefas:
 1. Avalie se e pratico, util e com potencial viral/tendencia.
 2. Crie um titulo comercial atraente (maximo 60 caracteres).
 3. Crie uma descricao vendedora em HTML: um paragrafo de gancho,
-    uma lista de 3 a 5 beneficios e especificacoes tecnicas simples.
+   uma lista de 3 a 5 beneficios e especificacoes tecnicas simples.
 
 Responda EXCLUSIVAMENTE em JSON com as chaves:
 {{"eh_tendencia": true ou false, "titulo": "...", "descricao_html": "..."}}
@@ -195,26 +195,28 @@ def processar(job_id, d):
 
     try:
         faltando = [n for n, v in (("CHAVE_GOOGLE", CHAVE_GOOGLE), ("YAMPI_ALIAS", YAMPI_ALIAS),
-                                    ("YAMPI_USER_TOKEN", YAMPI_USER_TOKEN),
-                                    ("YAMPI_SECRET_KEY", YAMPI_SECRET_KEY)) if not v]
+                                   ("YAMPI_USER_TOKEN", YAMPI_USER_TOKEN),
+                                   ("YAMPI_SECRET_KEY", YAMPI_SECRET_KEY)) if not v]
         if faltando:
             job["status"] = "erro"
             reg("Faltam variaveis de ambiente no Render: " + ", ".join(faltando))
             return
 
-        reg("Analisando com a IA...")
+        reg("Analisando com a IA Gemini...")
         analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
         if analise is None:
             job["status"] = "erro"
             reg("A IA nao respondeu. Tente de novo em alguns minutos.")
             return
 
+        job["resultado_ia"] = analise
+
         if not analise.get("eh_tendencia") and not d["forcar"]:
             job["status"] = "ignorado"
-            reg("A IA avaliou que nao e uma tendencia forte.")
+            reg("A IA avaliou que o produto NAO e uma tendencia forte.")
             return
 
-        reg("Titulo: " + str(analise.get("titulo")))
+        reg("Titulo gerado: " + str(analise.get("titulo")))
         reg("Cadastrando na Yampi...")
         brand_id = obter_ou_criar_marca(reg)
         if brand_id is None:
@@ -226,8 +228,8 @@ def processar(job_id, d):
                        venda, d["sku"], brand_id, reg)
         if ok:
             job["status"] = "ok"
-            estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel antes de publicar)"
-            reg("Cadastrado como " + estado + ". Preco de venda: R$ " + format(venda, ".2f"))
+            estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
+            reg("Sucesso! Produto cadastrado como " + estado + ". Preco: R$ " + format(venda, ".2f"))
         else:
             job["status"] = "erro"
     except Exception as erro:
@@ -277,16 +279,16 @@ def status(job_id):
     return jsonify(job)
 
 
-# ---------- PWA (app instalavel) - rotas sem senha de proposito ----------
+# ---------- PWA ----------
 @app.route("/manifest.json")
 def manifesto():
     dados = {
-        "name": "Bot de Produtos",
-        "short_name": "Bot Produtos",
+        "name": "Catálogo Pro - Bot IA",
+        "short_name": "Catálogo Pro",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#f4f4f6",
-        "theme_color": "#5b3df5",
+        "background_color": "#0f172a",
+        "theme_color": "#6366f1",
         "icons": [
             {"src": "/icone-192.png", "sizes": "192x192", "type": "image/png"},
             {"src": "/icone-512.png", "sizes": "512x512", "type": "image/png"},
@@ -307,7 +309,7 @@ ICONES = {}
 def gerar_icone(tam):
     if tam in ICONES:
         return ICONES[tam]
-    fundo = bytes((91, 61, 245))
+    fundo = bytes((99, 102, 241))
     branco = bytes((255, 255, 255))
     a = tam // 4
     b = tam - a
@@ -334,68 +336,463 @@ def icone(tam):
 
 
 PAGINA = r"""<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bot de Produtos</title>
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#5b3df5">
-<link rel="apple-touch-icon" href="/icone-192.png">
-<style>
-body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#f4f4f6;color:#222}
-.cartao{max-width:520px;margin:0 auto;background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 8px #0002}
-h1{font-size:1.25rem;margin:0 0 12px}
-label{display:block;margin:12px 0 4px;font-weight:600;font-size:.9rem}
-input,textarea{width:100%;box-sizing:border-box;padding:12px;font-size:1rem;border:1px solid #ccc;border-radius:10px}
-textarea{min-height:90px}
-button{width:100%;margin-top:16px;padding:14px;font-size:1.05rem;border:0;border-radius:10px;background:#5b3df5;color:#fff;font-weight:600}
-button:disabled{opacity:.5}
-.linha{display:flex;align-items:center;gap:8px;margin-top:12px}
-.linha input{width:auto}
-#log{white-space:pre-wrap;background:#111;color:#cfe;padding:12px;border-radius:10px;margin-top:16px;font-size:.85rem;display:none}
-#resultado{margin-top:12px;font-weight:700}
-</style></head><body><div class="cartao">
-<h1>Cadastrar produto na Yampi</h1>
-<label>Nome do produto</label><input id="nome">
-<label>Descrição</label><textarea id="descricao"></textarea>
-<label>Preço de custo (R$)</label><input id="custo" inputmode="decimal" placeholder="12,50">
-<label>SKU (opcional)</label><input id="sku" placeholder="deixe vazio para gerar automático">
-<div class="linha"><input type="checkbox" id="forcar"><span>Cadastrar mesmo se a IA achar que não é tendência</span></div>
-<button id="enviar">Analisar e cadastrar</button>
-<div id="resultado"></div><div id="log"></div>
-</div>
-<script>
-const $ = id => document.getElementById(id);
-$("enviar").onclick = async () => {
-  const corpo = {nome:$("nome").value, descricao:$("descricao").value, custo:$("custo").value,
-                 sku:$("sku").value, forcar:$("forcar").checked};
-  $("enviar").disabled = true;
-  $("resultado").textContent = "Enviando...";
-  $("log").style.display = "block";
-  $("log").textContent = "";
-  try {
-    const r = await fetch("/api/produtos", {method:"POST",
-      headers:{"Content-Type":"application/json"}, body:JSON.stringify(corpo)});
-    const d = await r.json();
-    if (!r.ok) { $("resultado").textContent = d.erro || "Erro"; $("enviar").disabled = false; return; }
-    acompanhar(d.id);
-  } catch (e) {
-    $("resultado").textContent = "Falha de conexão";
-    $("enviar").disabled = false;
-  }
-};
-async function acompanhar(id) {
-  try {
-    const r = await fetch("/api/status/" + id);
-    const d = await r.json();
-    if (!r.ok) { $("resultado").textContent = d.erro || "Erro"; $("enviar").disabled = false; return; }
-    $("log").textContent = (d.log || []).join("\n");
-    const msgs = {rodando:"Processando...", ok:"✅ Cadastrado!", erro:"❌ Deu erro", ignorado:"⚠️ Ignorado pela IA"};
-    $("resultado").textContent = msgs[d.status] || d.status;
-    if (d.status === "rodando") setTimeout(() => acompanhar(id), 2500);
-    else $("enviar").disabled = false;
-  } catch (e) {
-    setTimeout(() => acompanhar(id), 4000);
-  }
-}
-if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js"); }
-</script></body></html>"""
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Catálogo Pro - Gestor de Produtos IA</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#6366f1">
+  <link rel="apple-touch-icon" href="/icone-192.png">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --input-bg: #0f172a;
+      --border: #334155;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    .app-container {
+      width: 100%;
+      max-width: 540px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 4px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.2rem;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+
+    .brand-title h1 { font-size: 1.15rem; font-weight: 700; }
+    .brand-title p { font-size: 0.75rem; color: var(--text-muted); }
+
+    .badge-yampi {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--accent);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    input, textarea {
+      width: 100%;
+      background-color: var(--input-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+    }
+
+    textarea { min-height: 80px; resize: vertical; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .calc-box {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .calc-box span { font-size: 0.75rem; color: var(--text-muted); }
+    .calc-box strong { font-size: 1.1rem; color: var(--accent); }
+
+    .checkbox-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+      margin-top: 4px;
+    }
+
+    .checkbox-container input { width: auto; display: none; }
+
+    .custom-checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      background: var(--input-bg);
+    }
+
+    .checkbox-container input:checked + .custom-checkbox {
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+
+    .custom-checkbox::after {
+      content: '✓';
+      color: white;
+      font-size: 12px;
+      font-weight: bold;
+      display: none;
+    }
+
+    .checkbox-container input:checked + .custom-checkbox::after { display: block; }
+
+    .btn-submit {
+      width: 100%;
+      background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+      transition: transform 0.1s, opacity 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-submit:active { transform: scale(0.98); }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status-card {
+      display: none;
+      border-left: 4px solid var(--primary);
+    }
+
+    .status-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .status-title { font-weight: 700; font-size: 0.95rem; }
+
+    .logs-box {
+      background: #090d16;
+      border-radius: 10px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #34d399;
+      max-height: 150px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .preview-box {
+      margin-top: 12px;
+      background: rgba(255,255,255,0.03);
+      border-radius: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .preview-title { font-size: 0.85rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+    .preview-content { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
+
+    .history-card { margin-top: 8px; }
+    .history-title { font-size: 0.9rem; font-weight: 700; color: var(--text-muted); margin-bottom: 10px; }
+    .history-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .history-item:last-child { border-bottom: none; }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+    <div class="header">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-title">
+          <h1>Catálogo Pro</h1>
+          <p>Automação Yampi + Gemini IA</p>
+        </div>
+      </div>
+      <div class="badge-yampi">● Conectado</div>
+    </div>
+
+    <div class="card">
+      <form id="bot-form" onsubmit="return false;">
+        <div class="form-group">
+          <label for="nome">Nome do Produto</label>
+          <input type="text" id="nome" placeholder="Ex: Mini Selador de Embalagens Portátil" required>
+        </div>
+
+        <div class="form-group">
+          <label for="descricao">Descrição Curta (Fornecedor / AliExpress)</label>
+          <textarea id="descricao" placeholder="Copie aqui os detalhes brutos do produto..."></textarea>
+        </div>
+
+        <div class="grid-2 form-group">
+          <div>
+            <label for="custo">Preço de Custo (R$)</label>
+            <input type="text" id="custo" inputmode="decimal" placeholder="12,50" required oninput="calcularVenda()">
+          </div>
+          <div class="calc-box">
+            <span>Preço de Venda (2.2x)</span>
+            <strong id="preco-venda-preview">R$ 0,00</strong>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="sku">SKU (Opcional)</label>
+          <input type="text" id="sku" placeholder="Deixe vazio para gerar automático">
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-container">
+            <input type="checkbox" id="forcar">
+            <div class="custom-checkbox"></div>
+            <span style="font-size: 0.85rem; color: var(--text-muted);">Forçar cadastro mesmo se a IA reprovar</span>
+          </label>
+        </div>
+
+        <button type="button" id="enviar" class="btn-submit">
+          <div class="spinner" id="spinner"></div>
+          <span id="btn-text">Analisar & Cadastrar na Yampi</span>
+        </button>
+      </form>
+    </div>
+
+    <!-- Status e Logs -->
+    <div class="card status-card" id="status-card">
+      <div class="status-header">
+        <div class="status-title" id="status-title">Processando...</div>
+        <div id="status-badge" style="font-size: 0.8rem; font-weight: 700;"></div>
+      </div>
+      <div class="logs-box" id="log-box">Iniciando análise com inteligência artificial...</div>
+
+      <div class="preview-box" id="preview-box" style="display: none;">
+        <div class="preview-title" id="preview-titulo"></div>
+        <div class="preview-content" id="preview-html"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MARGEM = 2.2;
+    const $ = id => document.getElementById(id);
+
+    function calcularVenda() {
+      const valorStr = $("custo").value.replace(",", ".");
+      const custo = parseFloat(valorStr);
+      if (!isNaN(custo) && custo > 0) {
+        const venda = custo * MARGEM;
+        $("preco-venda-preview").textContent = "R$ " + venda.toFixed(2).replace(".", ",");
+      } else {
+        $("preco-venda-preview").textContent = "R$ 0,00";
+      }
+    }
+
+    $("enviar").onclick = async () => {
+      const nome = $("nome").value.trim();
+      const custo = $("custo").value.trim();
+
+      if (!nome || !custo) {
+        alert("Por favor, preencha o nome do produto e o preço de custo.");
+        return;
+      }
+
+      const corpo = {
+        nome: nome,
+        descricao: $("descricao").value.trim(),
+        custo: custo,
+        sku: $("sku").value.trim(),
+        forcar: $("forcar").checked
+      };
+
+      $("enviar").disabled = true;
+      $("spinner").style.display = "block";
+      $("btn-text").textContent = "Processando com IA...";
+
+      $("status-card").style.display = "block";
+      $("status-title").textContent = "Analisando produto...";
+      $("status-badge").textContent = "⏳ RODANDO";
+      $("status-badge").style.color = "var(--warning)";
+      $("log-box").textContent = "Conectando ao servidor e enviando dados para o Gemini...";
+      $("preview-box").style.display = "none";
+
+      try {
+        const r = await fetch("/api/produtos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(corpo)
+        });
+        const d = await r.json();
+
+        if (!r.ok) {
+          $("status-title").textContent = "Erro na solicitação";
+          $("status-badge").textContent = "❌ ERRO";
+          $("status-badge").style.color = "var(--danger)";
+          $("log-box").textContent = d.erro || "Falha ao enviar os dados.";
+          resetBotao();
+          return;
+        }
+
+        acompanhar(d.id);
+      } catch (e) {
+        $("status-title").textContent = "Erro de conexão";
+        $("status-badge").textContent = "❌ ERRO";
+        $("status-badge").style.color = "var(--danger)";
+        $("log-box").textContent = "Não foi possível se comunicar com o servidor.";
+        resetBotao();
+      }
+    };
+
+    async function acompanhar(id) {
+      try {
+        const r = await fetch("/api/status/" + id);
+        const d = await r.json();
+
+        if (!r.ok) {
+          $("status-title").textContent = "Erro no servidor";
+          $("log-box").textContent = d.erro || "Erro ao consultar status.";
+          resetBotao();
+          return;
+        }
+
+        $("log-box").textContent = (d.log || []).join("\n");
+        $("log-box").scrollTop = $("log-box").scrollHeight;
+
+        if (d.resultado_ia) {
+          $("preview-box").style.display = "block";
+          $("preview-titulo").textContent = "✨ Título Criado: " + (d.resultado_ia.titulo || "");
+          $("preview-html").innerHTML = d.resultado_ia.descricao_html || "";
+        }
+
+        if (d.status === "rodando") {
+          setTimeout(() => acompanhar(id), 2000);
+        } else {
+          if (d.status === "ok") {
+            $("status-title").textContent = "Produto Cadastrado com Sucesso!";
+            $("status-badge").textContent = "✅ SUCESSO";
+            $("status-badge").style.color = "var(--accent)";
+          } else if (d.status === "ignorado") {
+            $("status-title").textContent = "Produto Reprovado pela IA";
+            $("status-badge").textContent = "⚠️ REPROVADO";
+            $("status-badge").style.color = "var(--warning)";
+          } else {
+            $("status-title").textContent = "Falha no Cadastro";
+            $("status-badge").textContent = "❌ ERRO";
+            $("status-badge").style.color = "var(--danger)";
+          }
+          resetBotao();
+        }
+      } catch (e) {
+        setTimeout(() => acompanhar(id), 3000);
+      }
+    }
+
+    function resetBotao() {
+      $("enviar").disabled = false;
+      $("spinner").style.display = "none";
+      $("btn-text").textContent = "Analisar & Cadastrar na Yampi";
+    }
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js");
+    }
+  </script>
+</body>
+</html>"""
