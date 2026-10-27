@@ -90,12 +90,12 @@ def listar_modelos():
     return lista[:1]
 
 
-def chamar_ia(corpo, registrar):
+def chamar_ia(corpo, registrar, timeout_val=120):
     for modelo in listar_modelos():
         url = BASE_GEMINI + "/models/" + modelo + ":generateContent"
         for tentativa in (1, 2):
             try:
-                r = requests.post(url, headers=CAB_IA, json=corpo, timeout=90)
+                r = requests.post(url, headers=CAB_IA, json=corpo, timeout=timeout_val)
             except Exception:
                 registrar(modelo + ": falha de conexao")
                 r = None
@@ -114,7 +114,7 @@ def chamar_ia(corpo, registrar):
 
 def analisar(nome, descricao, custo, registrar):
     prompt = f"""
-Voce e um especialista em E-commerce e Copywriting para produtos tendencia de utilidades domesticas.
+Voce e um especialista em E-commerce e Copywriting para produtos de sucesso.
 Responda sempre em portugues do Brasil, com acentuacao correta.
 
 Produto:
@@ -123,10 +123,10 @@ Produto:
 - Preco de custo: R$ {custo}
 
 Tarefas:
-1. Avalie se e pratico, util e com potencial viral/tendencia.
-2. Crie um titulo comercial atraente (maximo 60 caracteres).
-3. Crie uma descricao vendedora em HTML: um paragrafo de gancho,
-   uma lista de 3 a 5 beneficios e especificacoes tecnicas simples.
+1. Avalie se e comercializavel e possui bom apelo de venda.
+2. Crie um titulo comercial altamente atraente e otimizado para SEO (maximo 60 caracteres).
+3. Crie uma descricao vendedora em HTML: um paragrafo de gancho persuasivo,
+   uma lista de 3 a 5 beneficios claros e especificacoes tecnicas simples.
 
 Responda EXCLUSIVAMENTE em JSON com as chaves:
 {{"eh_tendencia": true ou false, "titulo": "...", "descricao_html": "..."}}
@@ -147,21 +147,22 @@ Responda EXCLUSIVAMENTE em JSON com as chaves:
         return None
 
 
-def sugerir_tendencias(nicho, registrar):
+def sugerir_tendencias(termo, registrar):
     prompt = f"""
-Voce e um curador de produtos virais de sucesso para lojas virtuais (dropshipping/e-commerce).
-Com base no nicho: "{nicho}", liste 3 produtos que sao tendencia atual, alta utilidade e excelente apelo de venda.
+Voce e um curador especialista em e-commerce e produtos de alta demanda.
+O usuario digitou o comando/termo: "{termo}".
+Gere exatamente 25 variacoes ou opçoes comerciais altamente precisas baseadas neste termo (por exemplo, se o termo for 'sofa', traga 25 tipos diferentes de sofás que vendem muito online, com nomes comerciais fortes e estimativas reais de preço de custo no Brasil).
 
-Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com os seguintes campos para cada item:
-- "nome": Nome comercial forte do produto
-- "descricao_resumida": Breve explicacao do que e o produto
-- "custo_estimado": Um valor numerico realista de preco de custo em Reais (ex: 15.50)
-- "motivo_tendencia": Por que vende bem
+Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com exatamente 25 itens e os seguintes campos para cada item:
+- "nome": Nome comercial forte e completo do produto
+- "descricao_resumida": Breve explicacao das caracteristicas e diferenciais do modelo
+- "custo_estimado": Um valor numerico realista de preco de custo em Reais (ex: 350.00)
+- "motivo_tendencia": Por que este modelo especifico tem alta saida no e-commerce
 
 Exemplo de formato:
 {{
   "produtos": [
-    {{"nome": "...", "descricao_resumida": "...", "custo_estimado": 15.00, "motivo_tendencia": "..."}}
+    {{"nome": "...", "descricao_resumida": "...", "custo_estimado": 150.00, "motivo_tendencia": "..."}}
   ]
 }}
 """
@@ -169,7 +170,7 @@ Exemplo de formato:
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
     }
-    dados = chamar_ia(corpo, registrar)
+    dados = chamar_ia(corpo, registrar, timeout_val=150)
     if dados is None:
         return None
     try:
@@ -310,7 +311,7 @@ def sugerir():
     d = request.get_json(force=True, silent=True) or {}
     nicho = str(d.get("nicho", "")).strip()
     if not nicho:
-        return jsonify(erro="Informe o nicho ou palavra-chave"), 400
+        return jsonify(erro="Informe o termo ou nicho"), 400
     
     logs = []
     def reg(m): logs.append(m)
@@ -469,7 +470,6 @@ PAGINA = r"""<!doctype html>
       font-weight: 600;
     }
 
-    /* Abas de navegação */
     .tabs {
       display: flex;
       background: var(--card-bg);
@@ -666,7 +666,6 @@ PAGINA = r"""<!doctype html>
     .preview-title { font-size: 0.85rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
     .preview-content { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
 
-    /* Estilo para sugestoes */
     .sugestao-card {
       background: rgba(255,255,255,0.02);
       border: 1px solid var(--border);
@@ -708,10 +707,9 @@ PAGINA = r"""<!doctype html>
       <div class="badge-yampi">● Conectado</div>
     </div>
 
-    <!-- Abas de Navegação -->
     <div class="tabs">
       <button class="tab-btn active" onclick="mudarAba('manual', this)">Manual</button>
-      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Sugestões IA</button>
+      <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Sugestões IA (25 Opções)</button>
     </div>
 
     <!-- ABA MANUAL -->
@@ -720,7 +718,7 @@ PAGINA = r"""<!doctype html>
         <form id="bot-form" onsubmit="return false;">
           <div class="form-group">
             <label for="nome">Nome do Produto</label>
-            <input type="text" id="nome" placeholder="Ex: Mini Selador de Embalagens Portátil" required>
+            <input type="text" id="nome" placeholder="Ex: Sofá Retrátil e Reclinável 3 Lugares" required>
           </div>
 
           <div class="form-group">
@@ -731,7 +729,7 @@ PAGINA = r"""<!doctype html>
           <div class="grid-2 form-group">
             <div>
               <label for="custo">Preço de Custo (R$)</label>
-              <input type="text" id="custo" inputmode="decimal" placeholder="12,50" required oninput="calcularVenda()">
+              <input type="text" id="custo" inputmode="decimal" placeholder="450,00" required oninput="calcularVenda()">
             </div>
             <div class="calc-box">
               <span>Preço de Venda (2.2x)</span>
@@ -759,7 +757,6 @@ PAGINA = r"""<!doctype html>
         </form>
       </div>
 
-      <!-- Status e Logs -->
       <div class="card status-card" id="status-card">
         <div class="status-header">
           <div class="status-title" id="status-title">Processando...</div>
@@ -778,12 +775,12 @@ PAGINA = r"""<!doctype html>
     <div id="aba-ia" class="tab-content">
       <div class="card">
         <div class="form-group">
-          <label for="nicho">Nicho ou Palavra-Chave de Tendência</label>
-          <input type="text" id="nicho" placeholder="Ex: Utensílios de cozinha inovadores, Gadgets de carro...">
+          <label for="nicho">Comando / Termo de Pesquisa</label>
+          <input type="text" id="nicho" placeholder="Ex: sofá, panela elétrica, suporte de celular...">
         </div>
         <button type="button" id="btn-sugerir" class="btn-submit" onclick="buscarSugestoes()">
           <div class="spinner" id="spinner-sugerir"></div>
-          <span id="btn-sugerir-text">🔍 Descobrir Produtos Virais com IA</span>
+          <span id="btn-sugerir-text">🔍 Gerar 25 Opções Precisas</span>
         </button>
       </div>
 
@@ -817,12 +814,12 @@ PAGINA = r"""<!doctype html>
     async function buscarSugestoes() {
       const nicho = $("nicho").value.trim();
       if (!nicho) {
-        alert("Digite um nicho ou palavra-chave.");
+        alert("Digite um termo para pesquisar.");
         return;
       }
       $("btn-sugerir").disabled = true;
       $("spinner-sugerir").style.display = "block";
-      $("btn-sugerir-text").textContent = "Analisando tendências...";
+      $("btn-sugerir-text").textContent = "Buscando 25 opções (aguarde alguns segundos)...";
       $("lista-sugestoes").innerHTML = "";
 
       try {
@@ -834,7 +831,7 @@ PAGINA = r"""<!doctype html>
         const d = await r.json();
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Descobrir Produtos Virais com IA";
+        $("btn-sugerir-text").textContent = "🔍 Gerar 25 Opções Precisas";
 
         if (!r.ok) {
           alert(d.erro || "Erro ao buscar sugestões.");
@@ -842,12 +839,12 @@ PAGINA = r"""<!doctype html>
         }
 
         let html = "";
-        (d.produtos || []).forEach((p, idx) => {
+        (d.produtos || []).forEach((p) => {
           html += `
             <div class="sugestao-card">
               <div class="sugestao-titulo">${p.nome}</div>
               <div class="sugestao-desc">${p.descricao_resumida}</div>
-              <div style="font-size:0.75rem; color:#f59e0b;">💡 Motivo: ${p.motivo_tendencia}</div>
+              <div style="font-size:0.75rem; color:#f59e0b;">💡 Por que vende: ${p.motivo_tendencia}</div>
               <div class="sugestao-footer">
                 <div class="sugestao-preco">Custo Est: R$ ${Number(p.custo_estimado).toFixed(2).replace('.', ',')}</div>
                 <button class="btn-cadastrar-sugestao" onclick="preencherEEnviar('${p.nome.replace(/'/g, "\\'")}', '${p.descricao_resumida.replace(/'/g, "\\'")}', ${p.custo_estimado})">🚀 Cadastrar</button>
@@ -859,7 +856,7 @@ PAGINA = r"""<!doctype html>
       } catch (e) {
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Descobrir Produtos Virais com IA";
+        $("btn-sugerir-text").textContent = "🔍 Gerar 25 Opções Precisas";
         alert("Erro de conexão ao buscar sugestões.");
       }
     }
