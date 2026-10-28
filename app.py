@@ -18,7 +18,7 @@ YAMPI_ALIAS = os.environ.get("YAMPI_ALIAS", "")
 YAMPI_USER_TOKEN = os.environ.get("YAMPI_USER_TOKEN", "")
 YAMPI_SECRET_KEY = os.environ.get("YAMPI_SECRET_KEY", "")
 SENHA_APP = os.environ.get("SENHA_APP", "")
-MARGEM_LUCRO = 2.0  # Multiplicador exato de 2x solicitado
+MARGEM_LUCRO = 2.0  # Multiplicador fixo de 2x
 NOME_MARCA = os.environ.get("NOME_MARCA", "Titia Flora")
 MODELO_PREFERIDO = os.environ.get("MODELO_PREFERIDO", "gemini-3.8-flash")
 PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
@@ -102,29 +102,36 @@ def chamar_ia(corpo, registrar, timeout_val=120):
             if r is not None:
                 if r.status_code == 200:
                     return r.json()
-                registrar(modelo + ": erro " + str(r.status_code) + " (" + motivo(r) + ")")
+                
+                err_msg = motivo(r)
+                if r.status_code == 429:
+                    registrar(f"⏳ Cooldown Ativo: Limite de cota atingido (Erro 429). Aguardando 10s para re-tentar...")
+                    time.sleep(10) # Cooldown de pausa inteligente
+                else:
+                    registrar(modelo + ": erro " + str(r.status_code) + " (" + err_msg + ")")
+
                 if r.status_code in (401, 403):
                     return None
                 if r.status_code in (400, 404):
                     break
             if tentativa == 1:
-                time.sleep(8)
+                time.sleep(5)
     return None
 
 
 def analisar(nome, descricao, custo, registrar):
     prompt = f"""
 Voce e um especialista em E-commerce e Copywriting. 
-Analise as informacoes brutas fornecidas (ou link/texto do produto original) e estruture um anuncio profissional em portugues do Brasil.
+Analise com atencao o nome/link fornecido e a descricao/avaliacoes originais para criar um novo nome comercial exclusivo e altamente chamativo combinando as duas fontes.
 
 Produto Bruto:
-- Nome/Link/Detalhes: {nome}
+- Nome/Link: {nome}
 - Descricao Original: {descricao}
 - Preco de Custo: R$ {custo}
 
 Tarefas:
-1. Crie um titulo comercial altamente atraente e otimizado (maximo 60 caracteres).
-2. Crie uma descricao vendedora completa em HTML estruturado (incluindo gancho persuasivo, beneficios detalhados extraidos do produto original e especificacoes tecnicas).
+1. Crie um NOVO titulo comercial exclusivo, forte e otimizado para SEO (maximo 60 caracteres) combinando o nome base com o melhor atributo extraido da descricao.
+2. Crie uma descricao vendedora completa em HTML estruturado (gancho persuasivo, beneficios detalhados e especificacoes tecnicas).
 
 Responda EXCLUSIVAMENTE em JSON com as chaves exatas:
 {{"eh_tendencia": true, "titulo": "...", "descricao_html": "..."}}
@@ -148,11 +155,11 @@ Responda EXCLUSIVAMENTE em JSON com as chaves exatas:
 def sugerir_tendencias(termo, registrar, lote_num):
     prompt = f"""
 Voce e um curador especialista em e-commerce. O usuario pediu o termo: "{termo}".
-Gere o lote {lote_num} de exatamente 25 opçoes comerciais detalhadas baseadas neste termo.
+Gere o lote {lote_num} de exatamente 20 opçoes comerciais detalhadas baseadas neste termo.
 
-Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com 25 itens contendo:
-- "nome": Nome comercial forte
-- "descricao_resumida": Descricao rica detalhando diferenciais e caracteristicas
+Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" com 20 itens contendo:
+- "nome": Nome comercial forte e unico
+- "descricao_resumida": Descricao rica detalhando diferenciais
 - "custo_estimado": Preco de custo realista em Reais (ex: 50.00)
 - "motivo_tendencia": Por que vende bem
 """
@@ -219,23 +226,23 @@ def processar(job_id, d):
         job["log"].append(msg)
 
     try:
-        reg("Analisando e estruturando informações com IA...")
+        reg("Analisando dados e sintetizando novo nome com IA...")
         analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
         if analise is None:
             job["status"] = "erro"
-            reg("A IA nao respondeu. Tente novamente.")
+            reg("A IA nao respondeu devido a limite de cota. Tente novamente em instantes.")
             return
 
         job["resultado_ia"] = analise
 
-        reg("Titulo gerado: " + str(analise.get("titulo")))
+        reg("Novo Titulo Criado: " + str(analise.get("titulo")))
         reg("Cadastrando na Yampi com multiplicador 2x...")
         brand_id = obter_ou_criar_marca(reg)
         if brand_id is None:
             job["status"] = "erro"
             return
 
-        venda = d["custo"] * MARGEM_LUCRO  # Multiplicador exato de 2x
+        venda = d["custo"] * MARGEM_LUCRO  # Multiplicador 2x
         ok = cadastrar(analise["titulo"], analise["descricao_html"], d["custo"],
                        venda, d["sku"], brand_id, reg)
         if ok:
@@ -273,7 +280,12 @@ def novo():
         return jsonify(erro="Preco de custo invalido"), 400
     if not nome or custo <= 0:
         return jsonify(erro="Informe o nome e um custo maior que zero"), 400
-    sku = str(d.get("sku", "")).strip() or "AUTO-" + str(int(time.time()))
+    
+    # Gerador de sufixo automatico no SKU para evitar duplicidade (Erro 422)
+    sufixo_sku = str(int(time.time() * 1000))[-6:]
+    sku_informado = str(d.get("sku", "")).strip()
+    sku = f"{sku_informado}-{sufixo_sku}" if sku_informado else f"AUTO-{sufixo_sku}"
+
     job_id = uuid.uuid4().hex[:10]
     JOBS[job_id] = {"status": "rodando", "log": []}
     dados = {"nome": nome, "descricao": descricao, "custo": custo,
@@ -296,7 +308,7 @@ def sugerir():
     
     res = sugerir_tendencias(nicho, reg, lote)
     if not res or "produtos" not in res:
-        return jsonify(erro="A IA nao conseguiu gerar sugestoes no momento."), 500
+        return jsonify(erro="A IA esta em cooldown devido ao limite de requisições. Aguarde 1 minuto e tente de novo."), 500
     return jsonify(produtos=res["produtos"])
 
 
@@ -370,7 +382,7 @@ PAGINA = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Catálogo Pro - Multiplicador 2x</title>
+  <title>Catálogo Pro - Lote 20 & Cooldown</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#6366f1">
   <link rel="apple-touch-icon" href="/icone-192.png">
@@ -653,7 +665,7 @@ PAGINA = r"""<!doctype html>
         <div class="brand-icon">⚡</div>
         <div class="brand-title">
           <h1>Catálogo Pro</h1>
-          <p>Multiplicador 2x + IA Gemini</p>
+          <p>Lote 20 + Cooldown + Multiplicador 2x</p>
         </div>
       </div>
       <div class="badge-yampi">● Conectado</div>
@@ -675,7 +687,7 @@ PAGINA = r"""<!doctype html>
 
           <div class="form-group">
             <label for="descricao">Detalhes, Especificações ou Avaliações Originais</label>
-            <textarea id="descricao" placeholder="Cole aqui os detalhes, ficha técnica ou o texto completo da página do fornecedor..."></textarea>
+            <textarea id="descricao" placeholder="Cole aqui os detalhes para a IA mesclar e gerar um novo nome exclusivo..."></textarea>
           </div>
 
           <div class="grid-2 form-group">
@@ -690,8 +702,8 @@ PAGINA = r"""<!doctype html>
           </div>
 
           <div class="form-group">
-            <label for="sku">SKU (Opcional)</label>
-            <input type="text" id="sku" placeholder="Deixe vazio para gerar automático">
+            <label for="sku">SKU Base (Opcional - Sufixo único automático)</label>
+            <input type="text" id="sku" placeholder="Ex: ANEL-01 (Gerará sufixo automático)">
           </div>
 
           <button type="button" id="enviar" class="btn-submit">
@@ -724,12 +736,12 @@ PAGINA = r"""<!doctype html>
         </div>
         <button type="button" id="btn-sugerir" class="btn-submit" onclick="iniciarBusca()">
           <div class="spinner" id="spinner-sugerir"></div>
-          <span id="btn-sugerir-text">🔍 Gerar Lote de 25 Opções</span>
+          <span id="btn-sugerir-text">🔍 Gerar Lote de 20 Opções</span>
         </button>
       </div>
 
       <div id="lista-sugestoes"></div>
-      <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()" style="display:none;">➕ Carregar Mais 25 Opções</button>
+      <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()" style="display:none;">➕ Carregar Mais 20 Opções</button>
     </div>
 
   </div>
@@ -778,7 +790,7 @@ PAGINA = r"""<!doctype html>
       $("btn-sugerir").disabled = true;
       $("btn-carregar-mais").style.display = "none";
       $("spinner-sugerir").style.display = "block";
-      $("btn-sugerir-text").textContent = `Buscando lote ${loteAtual} (25 opções)...`;
+      $("btn-sugerir-text").textContent = `Buscando lote ${loteAtual} (20 opções)...`;
 
       try {
         const r = await fetch("/api/sugerir", {
@@ -789,7 +801,7 @@ PAGINA = r"""<!doctype html>
         const d = await r.json();
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 25 Opções";
+        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 20 Opções";
         $("btn-carregar-mais").style.display = "block";
 
         if (!r.ok) {
@@ -815,7 +827,7 @@ PAGINA = r"""<!doctype html>
       } catch (e) {
         $("btn-sugerir").disabled = false;
         $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 25 Opções";
+        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 20 Opções";
         $("btn-carregar-mais").style.display = "block";
         alert("Erro de conexão ao buscar sugestões.");
       }
@@ -851,10 +863,10 @@ PAGINA = r"""<!doctype html>
       $("btn-text").textContent = "Processando e formatando...";
 
       $("status-card").style.display = "block";
-      $("status-title").textContent = "Copiando e estruturando dados...";
+      $("status-title").textContent = "Criando novo nome e gerando SKU exclusivo...";
       $("status-badge").textContent = "⏳ RODANDO";
       $("status-badge").style.color = "var(--warning)";
-      $("log-box").textContent = "Analisando ficha técnica e aplicando multiplicador 2x...";
+      $("log-box").textContent = "Sintetizando nome com base na descrição e aplicando multiplicador 2x...";
       $("preview-box").style.display = "none";
 
       try {
@@ -901,7 +913,7 @@ PAGINA = r"""<!doctype html>
 
         if (d.resultado_ia) {
           $("preview-box").style.display = "block";
-          $("preview-titulo").textContent = "✨ Título Criado: " + (d.resultado_ia.titulo || "");
+          $("preview-titulo").textContent = "✨ Novo Título Criado: " + (d.resultado_ia.titulo || "");
           $("preview-html").innerHTML = d.resultado_ia.descricao_html || "";
         }
 
