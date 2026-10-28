@@ -15,9 +15,15 @@ from flask import Flask, request, jsonify, Response, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dropai-secret-key-super-segura-2026")
 
-# Chave centralizada da IA (Fica no Render, o cliente nao mexe nisso)
+# ---------- CONTAS VIP COM PRIORIDADE MÁXIMA ----------
+EMAILS_VIP = [
+    "lojashopee995@gmail.com",  # Sua conta principal (Prioridade 1)
+    "email_do_seu_pai@gmail.com",     # Aguardando e-mail do seu pai
+    "email_do_seu_irmao@gmail.com"   # Aguardando e-mail do seu irmão
+]
+
+# Chave centralizada da IA no Render
 CHAVE_GOOGLE = os.environ.get("CHAVE_GOOGLE", "")
-SENHA_ADMIN = os.environ.get("SENHA_ADMIN", "admin123")
 NOME_MARCA = os.environ.get("NOME_MARCA", "DropAI Premium")
 MODELO_PREFERIDO = os.environ.get("MODELO_PREFERIDO", "gemini-3.8-flash")
 PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
@@ -26,8 +32,11 @@ CERCA = chr(96) * 3
 JOBS = {}
 MODELOS = []
 
+# Trava para dar prioridade VIP ao processar requisições
+LOCK_PROCESSAMENTO = threading.Lock()
 
-# ---------- Base de Dados SQLite (Utilizadores & Lojas) ----------
+
+# ---------- Base de Dados SQLite ----------
 def init_db():
     conn = sqlite3.connect("dropai.db")
     cursor = conn.cursor()
@@ -36,6 +45,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
+            eh_vip INTEGER DEFAULT 0,
             yampi_alias TEXT,
             yampi_token TEXT,
             yampi_secret TEXT
@@ -103,7 +113,7 @@ def chamar_ia(corpo, registrar, timeout_val=120):
                 
                 err_msg = motivo(r)
                 if r.status_code == 429:
-                    registrar(f"⏳ DropAI Cooldown: Limite de cota atingido (Erro 429). Aguardando 10s...")
+                    registrar(f"⏳ DropAI Cooldown: Limite de cota atingido. Aguardando 10s...")
                     time.sleep(10)
                 else:
                     registrar(modelo + ": erro " + str(r.status_code) + " (" + err_msg + ")")
@@ -119,7 +129,7 @@ def chamar_ia(corpo, registrar, timeout_val=120):
 
 def analisar(nome, descricao, custo, registrar):
     prompt = f"""
-Voce e o DropAI, uma IA especialista em E-commerce e Copywriting de alta conversao. 
+Voce e o DropAI, uma IA especialista em E-commerce e Copywriting. 
 Analise o nome/link fornecido e a descricao/avaliacoes originais para criar um novo nome comercial exclusivo e altamente chamativo.
 
 Produto Bruto:
@@ -220,55 +230,63 @@ def cadastrar(alias, user_token, secret_key, titulo, descricao_html, custo, vend
     return False
 
 
-# ---------- Processo Background ----------
+# ---------- Processo Background com Fila VIP ----------
 def processar(job_id, d):
     job = JOBS[job_id]
 
     def reg(msg):
         job["log"].append(msg)
 
-    try:
-        if not CHAVE_GOOGLE:
+    if not d.get("eh_vip"):
+        reg("Fila DropAI: Aguardando slot do servidor...")
+        time.sleep(2)
+
+    with LOCK_PROCESSAMENTO:
+        try:
+            if not CHAVE_GOOGLE:
+                job["status"] = "erro"
+                reg("Erro crítico: Chave da IA centralizada não configurada no Render.")
+                return
+
+            if not d["alias"] or not d["token"] or not d["secret"]:
+                job["status"] = "erro"
+                reg("Erro: Credenciais da Yampi não informadas. Vá em Configurações.")
+                return
+
+            if d.get("eh_vip"):
+                reg("👑 Processamento Prioritário VIP Ativado!")
+
+            reg("DropAI analisando dados e sintetizando nome...")
+            analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
+            if analise is None:
+                job["status"] = "erro"
+                reg("A IA não respondeu. Tente novamente em instantes.")
+                return
+
+            job["resultado_ia"] = analise
+
+            reg("Novo Título Criado: " + str(analise.get("titulo")))
+            reg("Cadastrando na Yampi com multiplicador 2x...")
+            brand_id = obter_ou_criar_marca(d["alias"], d["token"], d["secret"], reg)
+            if brand_id is None:
+                job["status"] = "erro"
+                return
+
+            venda = d["custo"] * 2.0
+            ok = cadastrar(d["alias"], d["token"], d["secret"], analise["titulo"], analise["descricao_html"], d["custo"],
+                           venda, d["sku"], brand_id, reg)
+            if ok:
+                job["status"] = "ok"
+                estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
+                reg(f"Sucesso! Cadastrado como {estado}. Preço de Venda (2x): R$ {venda:.2f}")
+            else:
+                job["status"] = "erro"
+        except Exception as erro:
             job["status"] = "erro"
-            reg("Erro crítico: Chave da IA centralizada não configurada no Render.")
-            return
-
-        if not d["alias"] or not d["token"] or not d["secret"]:
-            job["status"] = "erro"
-            reg("Erro: Credenciais da Yampi não informadas. Vá em Configurações.")
-            return
-
-        reg("DropAI analisando dados e sintetizando nome...")
-        analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
-        if analise is None:
-            job["status"] = "erro"
-            reg("A IA não respondeu. Tente novamente em instantes.")
-            return
-
-        job["resultado_ia"] = analise
-
-        reg("Novo Título Criado: " + str(analise.get("titulo")))
-        reg("Cadastrando na Yampi com multiplicador 2x...")
-        brand_id = obter_ou_criar_marca(d["alias"], d["token"], d["secret"], reg)
-        if brand_id is None:
-            job["status"] = "erro"
-            return
-
-        venda = d["custo"] * 2.0  # Multiplicador exato de 2x
-        ok = cadastrar(d["alias"], d["token"], d["secret"], analise["titulo"], analise["descricao_html"], d["custo"],
-                       venda, d["sku"], brand_id, reg)
-        if ok:
-            job["status"] = "ok"
-            estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
-            reg(f"Sucesso! Cadastrado como {estado}. Preço de Venda (2x): R$ {venda:.2f}")
-        else:
-            job["status"] = "erro"
-    except Exception as erro:
-        job["status"] = "erro"
-        reg("Erro inesperado: " + str(erro))
+            reg("Erro inesperado: " + str(erro))
 
 
-# ---------- Rotas da API ----------
+# ---------- API Routes ----------
 @app.route("/saude")
 def saude():
     return "ok"
@@ -287,14 +305,16 @@ def registrar_usuario():
     if not email or not senha:
         return jsonify(erro="Informe e-mail e senha"), 400
 
+    eh_vip = 1 if email in [e.lower() for e in EMAILS_VIP] else 0
+
     conn = db_conectar()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO usuarios (email, senha) VALUES (?, ?)", (email, senha))
+        cursor.execute("INSERT INTO usuarios (email, senha, eh_vip) VALUES (?, ?, ?)", (email, senha, eh_vip))
         conn.commit()
-        return jsonify(sucesso=True)
+        return jsonify(sucesso=True, eh_vip=bool(eh_vip))
     except sqlite3.IntegrityError:
-        return jsonify(erro="Este e-mail já está cadastrado"), 400
+        return jsonify(erro="Este e-mail já está cadastrado. Clique em Entrar."), 400
     finally:
         conn.close()
 
@@ -307,14 +327,16 @@ def login_usuario():
 
     conn = db_conectar()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, yampi_alias, yampi_token, yampi_secret FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
+    cursor.execute("SELECT id, yampi_alias, yampi_token, yampi_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
     user = cursor.fetchone()
     conn.close()
 
     if not user:
         return jsonify(erro="E-mail ou senha incorretos"), 401
 
-    return jsonify(sucesso=True, user={"id": user[0], "email": email, "alias": user[1] or "", "token": user[2] or "", "secret": user[3] or ""})
+    is_vip = 1 if email in [e.lower() for e in EMAILS_VIP] else (user[4] or 0)
+
+    return jsonify(sucesso=True, user={"id": user[0], "email": email, "alias": user[1] or "", "token": user[2] or "", "secret": user[3] or "", "eh_vip": bool(is_vip)})
 
 
 @app.route("/api/auth/salvar-config", methods=["POST"])
@@ -363,6 +385,7 @@ def novo():
         "alias": str(d.get("alias", "")).strip(),
         "token": str(d.get("token", "")).strip(),
         "secret": str(d.get("secret", "")).strip(),
+        "eh_vip": bool(d.get("eh_vip"))
     }
     
     threading.Thread(target=processar, args=(job_id, dados), daemon=True).start()
@@ -383,7 +406,7 @@ def sugerir():
     
     res = sugerir_tendencias(nicho, reg, lote)
     if not res or "produtos" not in res:
-        return jsonify(erro="DropAI em cooldown ou sem cota temporária. Aguarde 1 minuto."), 500
+        return jsonify(erro="DropAI em cooldown. Aguarde 1 minuto."), 500
     return jsonify(produtos=res["produtos"])
 
 
@@ -425,8 +448,8 @@ ICONES = {}
 def gerar_icone(tam):
     if tam in ICONES:
         return ICONES[tam]
-    fundo = bytes((0, 0, 0)) # Fundo preto
-    ciano = bytes((0, 163, 255)) # Ciano vibrante
+    fundo = bytes((0, 0, 0))
+    ciano = bytes((0, 163, 255))
     a = tam // 4
     b = tam - a
     linha_fundo = b"\x00" + fundo * tam
@@ -456,23 +479,22 @@ PAGINA = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>DropAI - Sua Automação Yampi Inteligente</title>
+  <title>DropAI - Automação Inteligente Yampi</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#00A3FF">
   <link rel="apple-touch-icon" href="/icone-192.png">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    /* IDENTIDADE VISUAL ATUALIZADA - TEMA NEON DROP */
     :root {
       --bg: #000000;
       --card-bg: #111111;
       --input-bg: #030303;
       --border: #4F4F4F;
-      --primary: #00A3FF; /* Ciano Elétrico vibrante */
+      --primary: #00A3FF;
       --primary-hover: #0081CC;
-      --text: #F9FAFB; /* Branco Gelo */
+      --text: #F9FAFB;
       --text-muted: #9CA3AF;
-      --accent: #00E676; /* Verde Neon */
+      --accent: #00E676;
       --danger: #EF4444;
       --warning: #F59E0B;
     }
@@ -496,7 +518,6 @@ PAGINA = r"""<!doctype html>
       gap: 16px;
     }
 
-    /* Tela de Login */
     #auth-screen {
       display: flex;
       flex-direction: column;
@@ -537,11 +558,11 @@ PAGINA = r"""<!doctype html>
       font-weight: 800;
       font-size: 1.2rem;
       box-shadow: 0 0 15px rgba(0, 163, 255, 0.4);
+      position: relative;
     }
 
-    /* Estilização da Coroa no Logo */
     .brand-icon::after {
-      content: '♚'; /* Coroa estilizada */
+      content: '♚';
       position: absolute;
       top: -8px;
       font-size: 0.9rem;
@@ -550,6 +571,16 @@ PAGINA = r"""<!doctype html>
 
     .brand-title h1 { font-size: 1.15rem; font-weight: 700; color: var(--text); }
     .brand-title p { font-size: 0.75rem; color: var(--text-muted); }
+
+    .badge-vip {
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: var(--warning);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
 
     .badge-yampi {
       background: rgba(0, 230, 118, 0.1);
@@ -585,7 +616,7 @@ PAGINA = r"""<!doctype html>
 
     .tab-btn.active {
       background: var(--primary);
-      color: #000; /* Texto preto no ciano */
+      color: #000;
       box-shadow: 0 0 10px rgba(0, 163, 255, 0.3);
     }
 
@@ -651,7 +682,7 @@ PAGINA = r"""<!doctype html>
     .btn-submit {
       width: 100%;
       background: linear-gradient(135deg, var(--primary), var(--primary-hover));
-      color: #000; /* Texto preto no ciano */
+      color: #000;
       border: none;
       border-radius: 12px;
       padding: 14px;
@@ -659,7 +690,7 @@ PAGINA = r"""<!doctype html>
       font-weight: 700;
       cursor: pointer;
       box-shadow: 0 4px 14px rgba(0, 163, 255, 0.3);
-      transition: transform 0.1s, opacity 0.2s, box-shadow 0.2s;
+      transition: transform 0.1s, opacity 0.2s;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -668,7 +699,6 @@ PAGINA = r"""<!doctype html>
 
     .btn-submit:active { transform: scale(0.98); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-submit:hover { box-shadow: 0 6px 20px rgba(0, 163, 255, 0.5); }
 
     .spinner {
       width: 18px;
@@ -757,18 +787,17 @@ PAGINA = r"""<!doctype html>
       cursor: pointer;
       margin-top: 8px;
     }
-    .btn-carregar-mais:hover { border-color: var(--primary); color: var(--primary); }
   </style>
 </head>
 <body>
 
   <div class="app-container">
 
-    <!-- TELA DE LOGIN / REGISTO -->
+    <!-- TELA DE LOGIN / CADASTRO -->
     <div id="auth-screen">
       <div class="auth-logo">
         <h1>♚ DropAI</h1>
-        <p>Automação Yampi Inteligente Premium</p>
+        <p>Automação Inteligente Yampi</p>
       </div>
       <div class="card">
         <div class="form-group">
@@ -781,12 +810,12 @@ PAGINA = r"""<!doctype html>
         </div>
         <div style="display: flex; gap: 10px;">
           <button type="button" class="btn-submit" onclick="fazerLogin()">Entrar</button>
-          <button type="button" class="btn-submit" style="background: transparent; border: 1px solid var(--border); color: var(--text);" onclick="fazerRegisto()">Registar</button>
+          <button type="button" class="btn-submit" style="background: transparent; border: 1px solid var(--border); color: var(--text);" onclick="fazerRegisto()">Criar Conta</button>
         </div>
       </div>
     </div>
 
-    <!-- PAINEL PRINCIPAL (APÓS LOGIN) -->
+    <!-- PAINEL PRINCIPAL -->
     <div id="app-screen" style="display: none; flex-direction: column; gap: 16px;">
       <div class="header">
         <div class="brand">
@@ -797,6 +826,7 @@ PAGINA = r"""<!doctype html>
           </div>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="badge-vip" id="badge-status-vip" style="display:none;">👑 VIP</div>
           <div class="badge-yampi" id="status-conexao">● Conectado</div>
           <button onclick="fazerLogout()" style="background: transparent; border: none; color: var(--danger); font-size: 0.75rem; font-weight: 700; cursor: pointer;">Sair</button>
         </div>
@@ -813,7 +843,7 @@ PAGINA = r"""<!doctype html>
       <div id="aba-config" class="tab-content">
         <div class="card">
           <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">⚙️ Credenciais da Sua Loja</h3>
-          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Informe os dados da sua Yampi para que o DropAI envie os produtos diretamente para o seu catálogo.</p>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Informe os dados da sua Yampi para cadastrar produtos automaticamente no seu catálogo.</p>
           
           <div class="form-group">
             <label for="cfg-alias">Yampi Alias (Nome da Loja)</label>
@@ -950,8 +980,8 @@ PAGINA = r"""<!doctype html>
           body: JSON.stringify({ email, senha })
         });
         const d = await r.json();
-        if (!r.ok) { alert(d.erro || "Erro ao registar."); return; }
-        alert("Conta criada com sucesso! Faça login.");
+        if (!r.ok) { alert(d.erro || "Erro ao criar conta."); return; }
+        alert("Conta criada com sucesso! Clique em Entrar.");
       } catch (e) {
         alert("Erro de conexão.");
       }
@@ -964,6 +994,9 @@ PAGINA = r"""<!doctype html>
       $("cfg-alias").value = user.alias || "";
       $("cfg-token").value = user.token || "";
       $("cfg-secret").value = user.secret || "";
+      if (user.eh_vip) {
+        $("badge-status-vip").style.display = "inline-block";
+      }
       if (user.alias) { $("status-conexao").textContent = "● " + user.alias; }
     }
 
@@ -1109,7 +1142,8 @@ PAGINA = r"""<!doctype html>
         sku: $("sku").value.trim(),
         alias: user.alias,
         token: user.token,
-        secret: user.secret
+        secret: user.secret,
+        eh_vip: user.eh_vip
       };
 
       $("enviar").disabled = true;
