@@ -2,13 +2,17 @@ import os
 import json
 import time
 import uuid
-import hmac
 import sqlite3
 import threading
-from functools import wraps
 
 import requests
-from flask import Flask, request, jsonify, Response, session, send_file
+from flask import Flask, request, jsonify, Response, send_file
+
+# Importa o cliente do Turso se estiver disponível
+try:
+    import libsql_client
+except ImportError:
+    libsql_client = None
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dropai-secret-key-super-segura-2026")
@@ -16,7 +20,7 @@ app.secret_key = os.environ.get("FLASK_SECRET", "dropai-secret-key-super-segura-
 # ---------- CONTAS VIP COM PRIORIDADE MÁXIMA ----------
 EMAILS_VIP = [
     "lojashopee995@gmail.com",  # Sua conta principal (Prioridade 1)
-    "email_do_seu_pai@gmail.com",     # Pai
+    "email_do_seu_pai@gmail.com",      # Pai
     "email_do_seu_irmao@gmail.com"   # Irmão
 ]
 
@@ -26,6 +30,9 @@ NOME_MARCA = os.environ.get("NOME_MARCA", "DropAI Premium")
 MODELO_PREFERIDO = os.environ.get("MODELO_PREFERIDO", "gemini-3.8-flash")
 PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
 
+TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
+TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+
 CERCA = chr(96) * 3
 JOBS = {}
 MODELOS = []
@@ -33,30 +40,47 @@ MODELOS = []
 LOCK_PROCESSAMENTO = threading.Lock()
 
 
-# ---------- Base de Dados SQLite ----------
+# ---------- Base de Dados (Turso / SQLite) ----------
+def db_conectar():
+    if TURSO_URL and TURSO_TOKEN and libsql_client:
+        return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
+    else:
+        return sqlite3.connect("dropai.db")
+
 def init_db():
-    conn = sqlite3.connect("dropai.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            senha TEXT NOT NULL,
-            eh_vip INTEGER DEFAULT 0,
-            plataforma TEXT DEFAULT 'yampi',
-            loja_url TEXT,
-            api_token TEXT,
-            api_secret TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    if TURSO_URL and TURSO_TOKEN and libsql_client:
+        conn = db_conectar()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                senha TEXT NOT NULL,
+                eh_vip INTEGER DEFAULT 0,
+                plataforma TEXT DEFAULT 'yampi',
+                loja_url TEXT,
+                api_token TEXT,
+                api_secret TEXT
+            )
+        """)
+    else:
+        conn = sqlite3.connect("dropai.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                senha TEXT NOT NULL,
+                eh_vip INTEGER DEFAULT 0,
+                plataforma TEXT DEFAULT 'yampi',
+                loja_url TEXT,
+                api_token TEXT,
+                api_secret TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
 
 init_db()
-
-
-def db_conectar():
-    return sqlite3.connect("dropai.db")
 
 
 # ---------- IA Centralizada ----------
@@ -186,7 +210,6 @@ Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" co
 
 
 # ---------- Integrações Multiplataforma ----------
-
 def cadastrar_yampi(alias, user_token, secret_key, titulo, descricao_html, custo, venda, sku, registrar):
     base_yampi = f"https://api.dooki.com.br/v2/{alias}/catalog"
     headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
@@ -368,15 +391,19 @@ def registrar_usuario():
     eh_vip = 1 if email in [e.lower() for e in EMAILS_VIP] else 0
 
     conn = db_conectar()
-    cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO usuarios (email, senha, eh_vip) VALUES (?, ?, ?)", (email, senha, eh_vip))
-        conn.commit()
+        if TURSO_URL and TURSO_TOKEN and libsql_client:
+            conn.execute("INSERT INTO usuarios (email, senha, eh_vip) VALUES (?, ?, ?)", [email, senha, eh_vip])
+        else:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO usuarios (email, senha, eh_vip) VALUES (?, ?, ?)", (email, senha, eh_vip))
+            conn.commit()
+            conn.close()
         return jsonify(sucesso=True, eh_vip=bool(eh_vip))
-    except sqlite3.IntegrityError:
+    except Exception:
+        if not (TURSO_URL and TURSO_TOKEN and libsql_client):
+            conn.close()
         return jsonify(erro="Este e-mail já está cadastrado. Clique em Entrar."), 400
-    finally:
-        conn.close()
 
 
 @app.route("/api/auth/login", methods=["POST"])
@@ -386,10 +413,15 @@ def login_usuario():
     senha = str(d.get("senha", "")).strip()
 
     conn = db_conectar()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, plataforma, loja_url, api_token, api_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
-    user = cursor.fetchone()
-    conn.close()
+    if TURSO_URL and TURSO_TOKEN and libsql_client:
+        res = conn.execute("SELECT id, plataforma, loja_url, api_token, api_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", [email, senha])
+        rows = res.rows
+        user = rows[0] if rows else None
+    else:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, plataforma, loja_url, api_token, api_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
+        user = cursor.fetchone()
+        conn.close()
 
     if not user:
         return jsonify(erro="E-mail ou senha incorretos"), 401
@@ -420,11 +452,14 @@ def salvar_config():
         return jsonify(erro="Utilizador não identificado"), 400
 
     conn = db_conectar()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE usuarios SET plataforma = ?, loja_url = ?, api_token = ?, api_secret = ? WHERE email = ?", 
-                   (plataforma, loja_url, api_token, api_secret, email))
-    conn.commit()
-    conn.close()
+    if TURSO_URL and TURSO_TOKEN and libsql_client:
+        conn.execute("UPDATE usuarios SET plataforma = ?, loja_url = ?, api_token = ?, api_secret = ? WHERE email = ?", [plataforma, loja_url, api_token, api_secret, email])
+    else:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE usuarios SET plataforma = ?, loja_url = ?, api_token = ?, api_secret = ? WHERE email = ?", 
+                       (plataforma, loja_url, api_token, api_secret, email))
+        conn.commit()
+        conn.close()
     return jsonify(sucesso=True)
 
 
@@ -879,7 +914,7 @@ PAGINA = r"""<!doctype html>
 
   <div class="app-container">
 
-    <!-- TELA DE LOGIN COM A SUA LOGO OFICIAL -->
+    <!-- TELA DE LOGIN -->
     <div id="auth-screen">
       <div class="auth-logo">
         <img src="/icone.png" alt="DropAI Logo" class="app-logo-img">
@@ -960,14 +995,10 @@ PAGINA = r"""<!doctype html>
 
           <button type="button" class="btn-submit" onclick="salvarConfigLoja()">💾 Salvar Configurações</button>
 
-          <!-- GUIA PASSO A PASSO DINÂMICO LOGO ABAIXO DO BOTÃO -->
           <div class="tutorial-box">
             <div class="tutorial-title">📖 Como encontrar suas credenciais:</div>
-            <div class="tutorial-steps" id="tutorial-texto">
-              <!-- Preenchido via JavaScript dinamicamente -->
-            </div>
+            <div class="tutorial-steps" id="tutorial-texto"></div>
           </div>
-
         </div>
       </div>
 
@@ -988,55 +1019,57 @@ PAGINA = r"""<!doctype html>
             <div class="grid-2 form-group">
               <div>
                 <label for="custo">Preço de Custo (R$)</label>
-                <input type="text" id="custo" inputmode="decimal" placeholder="50,00" required oninput="calcularVenda()">
+                <input type="text" id="custo" placeholder="0.00" required oninput="calcularVenda()">
               </div>
               <div class="calc-box">
-                <span>Venda (2x Exato)</span>
-                <strong id="preco-venda-preview">R$ 0,00</strong>
+                <span>Preço de Venda (2x)</span>
+                <strong id="calc-venda">R$ 0,00</strong>
               </div>
             </div>
 
             <div class="form-group">
-              <label for="sku">SKU Base (Opcional)</label>
-              <input type="text" id="sku" placeholder="Ex: PROD-01">
+              <label for="sku">SKU Personalizado (Opcional)</label>
+              <input type="text" id="sku" placeholder="Deixe em branco para auto gerar...">
             </div>
 
-            <button type="button" id="enviar" class="btn-submit">
-              <div class="spinner" id="spinner"></div>
-              <span id="btn-text">Processar & Cadastrar na Loja (2x)</span>
+            <button type="button" class="btn-submit" id="btn-enviar" onclick="enviarProduto()">
+              <div class="spinner" id="spinner-enviar"></div>
+              <span>🚀 Importar e Cadastrar Produto</span>
             </button>
           </form>
         </div>
 
-        <div class="card status-card" id="status-card">
+        <div class="card status-card" id="card-status">
           <div class="status-header">
-            <div class="status-title" id="status-title">Processando...</div>
-            <div id="status-badge" style="font-size: 0.8rem; font-weight: 700;"></div>
+            <span class="status-title" id="status-titulo">Processando...</span>
+            <span id="status-badge" style="font-size: 0.75rem; font-weight: 750;">Aguardando</span>
           </div>
-          <div class="logs-box" id="log-box">Analisando dados do produto original...</div>
-
-          <div class="preview-box" id="preview-box" style="display: none;">
-            <div class="preview-title" id="preview-titulo"></div>
-            <div class="preview-content" id="preview-html"></div>
+          <div class="logs-box" id="logs-box">Iniciando tarefas...</div>
+          <div class="preview-box" id="preview-box" style="display:none;">
+            <div class="preview-title" id="prev-nome-titulo">Título Gerado</div>
+            <div class="preview-content" id="prev-desc-html"></div>
           </div>
         </div>
       </div>
 
-      <!-- ABA PRATELEIRA IA -->
+      <!-- ABA PRATELEIRA / IA TENDÊNCIAS -->
       <div id="aba-ia" class="tab-content">
         <div class="card">
+          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">✨ Prateleira Inteligente DropAI</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Descubra produtos em alta num nicho e importe-os instantaneamente.</p>
+          
           <div class="form-group">
-            <label for="nicho">Comando / Termo de Pesquisa</label>
-            <input type="text" id="nicho" placeholder="Ex: sofá, utilidades cozinha, gadgets...">
+            <label for="ia-termo">Termo / Nicho do Produto</label>
+            <input type="text" id="ia-termo" placeholder="ex: gadgets para pets, utilidades cozinha...">
           </div>
-          <button type="button" id="btn-sugerir" class="btn-submit" onclick="iniciarBusca()">
-            <div class="spinner" id="spinner-sugerir"></div>
-            <span id="btn-sugerir-text">🔍 Gerar Lote de 20 Opções</span>
+
+          <button type="button" class="btn-submit" onclick="carregarTendencias(1)">
+            🔍 Gerar Lote de Produtos (20 itens)
           </button>
         </div>
 
-        <div id="lista-sugestoes"></div>
-        <button type="button" id="btn-carregar-mais" class="btn-carregar-mais" onclick="carregarMais()" style="display:none;">➕ Carregar Mais 20 Opções</button>
+        <div id="lista-sugestoes-container"></div>
+        <button type="button" id="btn-mais-lotes" class="btn-carregar-mais" style="display:none;" onclick="carregarMaisLotes()">Carregar Mais 20 Opções</button>
       </div>
 
     </div>
@@ -1044,355 +1077,317 @@ PAGINA = r"""<!doctype html>
   </div>
 
   <script>
-    const MARGEM = 2.0;
-    const $ = id => document.getElementById(id);
-    let loteAtual = 1;
-    let termoAtual = "";
+    let usuarioAtual = null;
+    let loteAtualNum = 1;
+    let termoAtualBusca = "";
 
-    window.onload = () => {
-      const savedUser = localStorage.getItem("dropai_user");
-      if (savedUser) {
-        const user = JSON.parse(savedUser);
-        entrarNoSistema(user);
+    // Carrega dados salvos do localStorage ao abrir a página
+    window.addEventListener('DOMContentLoaded', () => {
+      const salvo = localStorage.getItem('dropai_user');
+      if (salvo) {
+        try {
+          usuarioAtual = JSON.parse(salvo);
+          entrarNoPainel();
+        } catch(e) {
+          localStorage.removeItem('dropai_user');
+        }
       }
       atualizarLabelsConfig();
-    };
+    });
+
+    function mudarAba(nome, btn) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById('aba-' + nome).classList.add('active');
+      if(btn) btn.classList.add('active');
+    }
 
     function atualizarLabelsConfig() {
-      const plat = $("cfg-plataforma").value;
-      const tut = $("tutorial-texto");
+      const plat = document.getElementById('cfg-plataforma').value;
+      const lblUrl = document.getElementById('lbl-url');
+      const lblToken = document.getElementById('lbl-token');
+      const lblSecret = document.getElementById('lbl-secret');
+      const groupSecret = document.getElementById('group-secret');
+      const tutorial = document.getElementById('tutorial-texto');
 
-      if (plat === "yampi") {
-        $("lbl-url").textContent = "Yampi Alias (Nome da Loja)";
-        $("cfg-url").placeholder = "ex: minhaloja";
-        $("lbl-token").textContent = "Yampi User-Token";
-        $("cfg-token").placeholder = "Cole seu User-Token...";
-        $("group-secret").style.display = "block";
-        $("lbl-secret").textContent = "Yampi User-Secret-Key";
-        $("cfg-secret").placeholder = "Cole sua User-Secret-Key...";
-
-        tut.innerHTML = `
-          <div class="step-item"><span class="step-badge">1</span><span>Acesse o painel da sua Yampi e vá em <strong>Configurações > API</strong>.</span></div>
-          <div class="step-item"><span class="step-badge">2</span><span>Copie o <strong>Alias</strong> (o nome que fica na URL da sua loja).</span></div>
-          <div class="step-item"><span class="step-badge">3</span><span>Gere ou copie o seu <strong>User-Token</strong> e a <strong>User-Secret-Key</strong> e cole acima.</span></div>
+      if (plat === 'yampi') {
+        lblUrl.innerText = "Yampi Alias (Nome da Loja)";
+        document.getElementById('cfg-url').placeholder = "ex: minhaloja";
+        lblToken.innerText = "Yampi User-Token";
+        document.getElementById('cfg-token').placeholder = "Cole seu User-Token...";
+        lblSecret.innerText = "Yampi User-Secret-Key";
+        document.getElementById('cfg-secret').placeholder = "Cole sua User-Secret-Key...";
+        groupSecret.style.display = "block";
+        tutorial.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Acesse o painel da sua Yampi em Configurações > API.</span></div>
+          <div class="step-item"><span class="step-badge">2</span><span>Copie o Alias da sua loja, o User-Token e a User-Secret-Key e cole acima.</span></div>
         `;
-      } else if (plat === "shopify") {
-        $("lbl-url").textContent = "URL da Loja Shopify";
-        $("cfg-url").placeholder = "ex: minhaloja.myshopify.com";
-        $("lbl-token").textContent = "Admin API Access Token";
-        $("cfg-token").placeholder = "shpat_xxxxxxxx...";
-        $("group-secret").style.display = "none";
-
-        tut.innerHTML = `
-          <div class="step-item"><span class="step-badge">1</span><span>Na Shopify, vá em <strong>Apps > Desenvolver aplicativos</strong>.</span></div>
-          <div class="step-item"><span class="step-badge">2</span><span>Crie um app e libere permissão de escrita em <strong>Produtos</strong> na API Admin.</span></div>
-          <div class="step-item"><span class="step-badge">3</span><span>Instale o app e copie o <strong>Token de Acesso da API Admin</strong> (começa com shpat_).</span></div>
+      } else if (plat === 'shopify') {
+        lblUrl.innerText = "Domínio da Loja Shopify";
+        document.getElementById('cfg-url').placeholder = "minhaloja.myshopify.com";
+        lblToken.innerText = "Shopify Admin API Access Token";
+        document.getElementById('cfg-token').placeholder = "shpat_xxxxxxxx...";
+        groupSecret.style.display = "none";
+        tutorial.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Na Shopify, vá em Apps > Desenvolver apps > Criar um app customizado.</span></div>
+          <div class="step-item"><span class="step-badge">2</span><span>Conceda permissões de escrita em produtos e copie o Access Token (shpat_...).</span></div>
         `;
-      } else if (plat === "nuvemshop") {
-        $("lbl-url").textContent = "ID da Loja Nuvemshop";
-        $("cfg-url").placeholder = "ex: 1234567";
-        $("lbl-token").textContent = "Access Token (Bearer)";
-        $("cfg-token").placeholder = "Cole o token da Nuvemshop...";
-        $("group-secret").style.display = "none";
-
-        tut.innerHTML = `
-          <div class="step-item"><span class="step-badge">1</span><span>Acesse o painel de parceiros ou desenvolvedores da Nuvemshop.</span></div>
-          <div class="step-item"><span class="step-badge">2</span><span>Crie um aplicativo privado para obter o seu <strong>Store ID</strong> (ID da loja).</span></div>
-          <div class="step-item"><span class="step-badge">3</span><span>Copie o <strong>Access Token</strong> gerado e cole nos campos acima.</span></div>
+      } else if (plat === 'nuvemshop') {
+        lblUrl.innerText = "ID da Loja Nuvemshop";
+        document.getElementById('cfg-url').placeholder = "ex: 1234567";
+        lblToken.innerText = "Nuvemshop Access Token";
+        document.getElementById('cfg-token').placeholder = "Cole seu token de acesso...";
+        groupSecret.style.display = "none";
+        tutorial.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Acesse parceiros nuvemshop ou crie um app na sua conta para obter o Token e Store ID.</span></div>
         `;
       }
     }
 
-    async function fazerLogin() {
-      const email = $("auth-email").value.trim();
-      const senha = $("auth-senha").value.trim();
-      if (!email || !senha) { alert("Preencha e-mail e senha."); return; }
+    function fazerLogin() {
+      const email = document.getElementById('auth-email').value.trim();
+      const senha = document.getElementById('auth-senha').value.trim();
+      if(!email || !senha) { alert('Preencha e-mail e senha.'); return; }
 
-      try {
-        const r = await fetch("/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, senha })
-        });
-        const d = await r.json();
-        if (!r.ok) { alert(d.erro || "Erro ao entrar."); return; }
-        
-        localStorage.setItem("dropai_user", JSON.stringify(d.user));
-        entrarNoSistema(d.user);
-      } catch (e) {
-        alert("Erro de conexão.");
-      }
+      fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email, senha})
+      })
+      .then(r => r.json().then(data => ({status: r.status, body: data})))
+      .then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          usuarioAtual = res.body.user;
+          localStorage.setItem('dropai_user', JSON.stringify(usuarioAtual));
+          entrarNoPainel();
+        } else {
+          alert(res.body.erro || 'Erro ao fazer login');
+        }
+      });
     }
 
-    async function fazerRegisto() {
-      const email = $("auth-email").value.trim();
-      const senha = $("auth-senha").value.trim();
-      if (!email || !senha) { alert("Preencha e-mail e senha."); return; }
+    function fazerRegisto() {
+      const email = document.getElementById('auth-email').value.trim();
+      const senha = document.getElementById('auth-senha').value.trim();
+      if(!email || !senha) { alert('Preencha e-mail e senha para criar conta.'); return; }
 
-      try {
-        const r = await fetch("/api/auth/registrar", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, senha })
-        });
-        const d = await r.json();
-        if (!r.ok) { alert(d.erro || "Erro ao criar conta."); return; }
-        alert("Conta criada com sucesso! Clique em Entrar.");
-      } catch (e) {
-        alert("Erro de conexão.");
-      }
+      fetch('/api/auth/registrar', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email, senha})
+      })
+      .then(r => r.json().then(data => ({status: r.status, body: data})))
+      .then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          alert('Conta criada com sucesso! Faça login.');
+        } else {
+          alert(res.body.erro || 'Erro ao registrar');
+        }
+      });
     }
 
-    function entrarNoSistema(user) {
-      $("auth-screen").style.display = "none";
-      $("app-screen").style.display = "flex";
-      $("user-email-display").textContent = user.email;
-      $("cfg-plataforma").value = user.plataforma || "yampi";
-      $("cfg-url").value = user.loja_url || "";
-      $("cfg-token").value = user.api_token || "";
-      $("cfg-secret").value = user.api_secret || "";
+    function entrarNoPainel() {
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('app-screen').style.display = 'flex';
+      document.getElementById('user-email-display').innerText = usuarioAtual.email;
+
+      if(usuarioAtual.eh_vip) {
+        document.getElementById('badge-status-vip').style.display = 'block';
+      }
+
+      // Preenche os campos de configuração com os dados salvos do utilizador
+      document.getElementById('cfg-plataforma').value = usuarioAtual.plataforma || 'yampi';
+      document.getElementById('cfg-url').value = usuarioAtual.loja_url || '';
+      document.getElementById('cfg-token').value = usuarioAtual.api_token || '';
+      document.getElementById('cfg-secret').value = usuarioAtual.api_secret || '';
       atualizarLabelsConfig();
-      if (user.eh_vip) {
-        $("badge-status-vip").style.display = "inline-block";
-      }
-      if (user.loja_url) { $("status-conexao").textContent = "● " + user.plataforma.toUpperCase(); }
     }
 
     function fazerLogout() {
-      localStorage.removeItem("dropai_user");
-      $("app-screen").style.display = "none";
-      $("auth-screen").style.display = "flex";
+      localStorage.removeItem('dropai_user');
+      usuarioAtual = null;
+      document.getElementById('app-screen').style.display = 'none';
+      document.getElementById('auth-screen').style.display = 'flex';
     }
 
-    async function salvarConfigLoja() {
-      const user = JSON.parse(localStorage.getItem("dropai_user") || "{}");
-      user.plataforma = $("cfg-plataforma").value;
-      user.loja_url = $("cfg-url").value.trim();
-      user.api_token = $("cfg-token").value.trim();
-      user.api_secret = $("cfg-secret").value.trim();
+    function salvarConfigLoja() {
+      if(!usuarioAtual) return;
+      const plataforma = document.getElementById('cfg-plataforma').value;
+      const loja_url = document.getElementById('cfg-url').value.trim();
+      const api_token = document.getElementById('cfg-token').value.trim();
+      const api_secret = document.getElementById('cfg-secret').value.trim();
 
-      try {
-        const r = await fetch("/api/auth/salvar-config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: user.email, plataforma: user.plataforma, loja_url: user.loja_url, api_token: user.api_token, api_secret: user.api_secret })
-        });
-        const d = await r.json();
-        if (!r.ok) { alert(d.erro || "Erro ao salvar."); return; }
-
-        localStorage.setItem("dropai_user", JSON.stringify(user));
-        $("status-conexao").textContent = "● " + user.plataforma.toUpperCase();
-        alert("Configurações da loja salvas com sucesso!");
-        mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
-      } catch (e) {
-        alert("Erro ao comunicar com o servidor.");
-      }
-    }
-
-    function mudarAba(aba, el) {
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      $("aba-" + aba).classList.add('active');
-      el.classList.add('active');
+      fetch('/api/auth/salvar-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: usuarioAtual.email, plataforma, loja_url, api_token, api_secret})
+      })
+      .then(r => r.json())
+      .then(data => {
+        if(data.sucesso) {
+          usuarioAtual.plataforma = plataforma;
+          usuarioAtual.loja_url = loja_url;
+          usuarioAtual.api_token = api_token;
+          usuarioAtual.api_secret = api_secret;
+          localStorage.setItem('dropai_user', JSON.stringify(usuarioAtual));
+          alert('Configurações salvas e associadas à sua conta com sucesso!');
+        } else {
+          alert(data.erro || 'Erro ao salvar');
+        }
+      });
     }
 
     function calcularVenda() {
-      const valorStr = $("custo").value.replace(",", ".");
-      const custo = parseFloat(valorStr);
-      if (!isNaN(custo) && custo > 0) {
-        const venda = custo * MARGEM;
-        $("preco-venda-preview").textContent = "R$ " + venda.toFixed(2).replace(".", ",");
-      } else {
-        $("preco-venda-preview").textContent = "R$ 0,00";
-      }
+      const custoStr = document.getElementById('custo').value.replace(',', '.');
+      const custo = parseFloat(custoStr) || 0;
+      const venda = custo * 2.0;
+      document.getElementById('calc-venda').innerText = 'R$ ' + venda.toFixed(2).replace('.', ',');
     }
 
-    function iniciarBusca() {
-      termoAtual = $("nicho").value.trim();
-      if (!termoAtual) {
-        alert("Digite um termo para pesquisar.");
-        return;
-      }
-      loteAtual = 1;
-      $("lista-sugestoes").innerHTML = "";
-      executarBusca();
-    }
-
-    function carregarMais() {
-      loteAtual++;
-      executarBusca();
-    }
-
-    async function executarBusca() {
-      $("btn-sugerir").disabled = true;
-      $("btn-carregar-mais").style.display = "none";
-      $("spinner-sugerir").style.display = "block";
-      $("btn-sugerir-text").textContent = `DropAI buscando lote ${loteAtual} (20 opções)...`;
-
-      try {
-        const r = await fetch("/api/sugerir", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nicho: termoAtual, lote: loteAtual })
-        });
-        const d = await r.json();
-        $("btn-sugerir").disabled = false;
-        $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 20 Opções";
-        $("btn-carregar-mais").style.display = "block";
-
-        if (!r.ok) {
-          alert(d.erro || "Erro ao buscar sugestões.");
-          return;
-        }
-
-        let html = $("lista-sugestoes").innerHTML;
-        (d.produtos || []).forEach((p) => {
-          html += `
-            <div class="sugestao-card">
-              <div class="sugestao-titulo">${p.nome}</div>
-              <div class="sugestao-desc">${p.descricao_resumida}</div>
-              <div style="font-size:0.75rem; color:#f59e0b;">💡 Destaque: ${p.motivo_tendencia}</div>
-              <div class="sugestao-footer">
-                <div class="sugestao-preco">Custo: R$ ${Number(p.custo_estimado).toFixed(2).replace('.', ',')} | Venda (2x): R$ ${(p.custo_estimado * 2).toFixed(2).replace('.', ',')}</div>
-                <button class="btn-cadastrar-sugestao" onclick="preencherEEnviar('${p.nome.replace(/'/g, "\\'")}', '${p.descricao_resumida.replace(/'/g, "\\'")}', ${p.custo_estimado})">🚀 Cadastrar</button>
-              </div>
-            </div>
-          `;
-        });
-        $("lista-sugestoes").innerHTML = html;
-      } catch (e) {
-        $("btn-sugerir").disabled = false;
-        $("spinner-sugerir").style.display = "none";
-        $("btn-sugerir-text").textContent = "🔍 Gerar Lote de 20 Opções";
-        $("btn-carregar-mais").style.display = "block";
-        alert("Erro de conexão ao buscar sugestões.");
-      }
-    }
-
-    function preencherEEnviar(nome, desc, custo) {
-      $("nome").value = nome;
-      $("descricao").value = desc;
-      $("custo").value = custo.toFixed(2).replace('.', ',');
-      calcularVenda();
-      mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
-      $("enviar").click();
-    }
-
-    $("enviar").onclick = async () => {
-      const nome = $("nome").value.trim();
-      const custo = $("custo").value.trim();
-      const user = JSON.parse(localStorage.getItem("dropai_user") || "{}");
-
-      if (!nome || !custo) {
-        alert("Por favor, preencha o nome/link do produto e o preço de custo.");
-        return;
-      }
-      if (!user.loja_url || !user.api_token) {
-        alert("Configure os seus dados de acesso na aba ⚙️ Loja antes de cadastrar.");
+    function enviarProduto() {
+      if(!usuarioAtual.loja_url || !usuarioAtual.api_token) {
+        alert('Configure sua loja na aba ⚙️ Loja antes de importar!');
         mudarAba('config', document.querySelectorAll('.tab-btn')[2]);
         return;
       }
 
-      const corpo = {
-        nome: nome,
-        descricao: $("descricao").value.trim(),
-        custo: custo,
-        sku: $("sku").value.trim(),
-        plataforma: user.plataforma || "yampi",
-        loja_url: user.loja_url,
-        api_token: user.api_token,
-        api_secret: user.api_secret,
-        eh_vip: user.eh_vip
-      };
+      const nome = document.getElementById('nome').value.trim();
+      const descricao = document.getElementById('descricao').value.trim();
+      const custo = document.getElementById('custo').value.trim();
+      const sku = document.getElementById('sku').value.trim();
 
-      $("enviar").disabled = true;
-      $("spinner").style.display = "block";
-      $("btn-text").textContent = "DropAI processando...";
-
-      $("status-card").style.display = "block";
-      $("status-title").textContent = "Sintetizando e enviando para a loja...";
-      $("status-badge").textContent = "⏳ RODANDO";
-      $("status-badge").style.color = "var(--warning)";
-      $("log-box").textContent = "DropAI gerando título exclusivo e aplicando multiplicador 2x...";
-      $("preview-box").style.display = "none";
-
-      try {
-        const r = await fetch("/api/produtos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(corpo)
-        });
-        const d = await r.json();
-
-        if (!r.ok) {
-          $("status-title").textContent = "Erro na solicitação";
-          $("status-badge").textContent = "❌ ERRO";
-          $("status-badge").style.color = "var(--danger)";
-          $("log-box").textContent = d.erro || "Falha ao enviar os dados.";
-          resetBotao();
-          return;
-        }
-
-        acompanhar(d.id);
-      } catch (e) {
-        $("status-title").textContent = "Erro de conexão";
-        $("status-badge").textContent = "❌ ERRO";
-        $("status-badge").style.color = "var(--danger)";
-        $("log-box").textContent = "Não foi possível se comunicar com o servidor.";
-        resetBotao();
+      if(!nome || !custo) {
+        alert('Preencha o nome e o preço de custo.');
+        return;
       }
-    };
 
-    async function acompanhar(id) {
-      try {
-        const r = await fetch("/api/status/" + id);
-        const d = await r.json();
+      const btn = document.getElementById('btn-enviar');
+      const spinner = document.getElementById('spinner-enviar');
+      btn.disabled = true;
+      spinner.style.display = 'block';
 
-        if (!r.ok) {
-          $("status-title").textContent = "Erro no servidor";
-          $("log-box").textContent = d.erro || "Erro ao consultar status.";
-          resetBotao();
+      const cardStatus = document.getElementById('card-status');
+      const logsBox = document.getElementById('logs-box');
+      cardStatus.style.display = 'block';
+      logsBox.innerText = 'Enviando produto para o motor DropAI...';
+      document.getElementById('preview-box').style.display = 'none';
+
+      fetch('/api/produtos', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          nome, descricao, custo, sku,
+          plataforma: usuarioAtual.plataforma,
+          loja_url: usuarioAtual.loja_url,
+          api_token: usuarioAtual.api_token,
+          api_secret: usuarioAtual.api_secret,
+          eh_vip: usuarioAtual.eh_vip
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if(data.erro) {
+          alert(data.erro);
+          btn.disabled = false;
+          spinner.style.display = 'none';
           return;
         }
+        monitorarJob(data.id);
+      })
+      .catch(err => {
+        alert('Erro de conexão');
+        btn.disabled = false;
+        spinner.style.display = 'none';
+      });
+    }
 
-        $("log-box").textContent = (d.log || []).join("\n");
-        $("log-box").scrollTop = $("log-box").scrollHeight;
+    function monitorarJob(jobId) {
+      const interval = setInterval(() => {
+        fetch('/api/status/' + jobId)
+        .then(r => r.json())
+        .then(job => {
+          const logsBox = document.getElementById('logs-box');
+          logsBox.innerText = job.log.join('\n');
+          logsBox.scrollTop = logsBox.scrollHeight;
 
-        if (d.resultado_ia) {
-          $("preview-box").style.display = "block";
-          $("preview-titulo").textContent = "✨ Título Criado: " + (d.resultado_ia.titulo || "");
-          $("preview-html").innerHTML = d.resultado_ia.descricao_html || "";
-        }
-
-        if (d.status === "rodando") {
-          setTimeout(() => acompanhar(id), 2000);
-        } else {
-          if (d.status === "ok") {
-            $("status-title").textContent = "Produto Cadastrado com Sucesso!";
-            $("status-badge").textContent = "✅ SUCESSO";
-            $("status-badge").style.color = "var(--accent)";
-          } else {
-            $("status-title").textContent = "Falha no Cadastro";
-            $("status-badge").textContent = "❌ ERRO";
-            $("status-badge").style.color = "var(--danger)";
+          if(job.status === 'ok' || job.status === 'erro') {
+            clearInterval(interval);
+            document.getElementById('btn-enviar').disabled = false;
+            document.getElementById('spinner-enviar').style.display = 'none';
+            document.getElementById('status-badge').innerText = job.status === 'ok' ? 'Concluído ✅' : 'Erro ❌';
+            
+            if(job.resultado_ia) {
+              document.getElementById('prev-nome-titulo').innerText = job.resultado_ia.titulo;
+              document.getElementById('prev-desc-html').innerHTML = job.resultado_ia.descricao_html;
+              document.getElementById('preview-box').style.display = 'block';
+            }
           }
-          resetBotao();
+        });
+      }, 2000);
+    }
+
+    function carregarTendencias(lote) {
+      const termo = document.getElementById('ia-termo').value.trim();
+      if(!termo) { alert('Digite um termo ou nicho.'); return; }
+      termoAtualBusca = termo;
+      loteAtualNum = lote;
+
+      const container = document.getElementById('lista-sugestoes-container');
+      container.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:20px;">A IA está curando as melhores tendências...</p>';
+      document.getElementById('btn-mais-lotes').style.display = 'none';
+
+      fetch('/api/sugerir', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nicho: termo, lote: lote})
+      })
+      .then(r => r.json())
+      .then(data => {
+        if(data.erro) {
+          container.innerHTML = `<p style="text-align:center; color:var(--danger);">${data.erro}</p>`;
+          return;
         }
-      } catch (e) {
-        setTimeout(() => acompanhar(id), 3000);
-      }
+        renderizarProdutosPrateleira(data.produtos);
+        document.getElementById('btn-mais-lotes').style.display = 'block';
+      });
     }
 
-    function resetBotao() {
-      $("enviar").disabled = false;
-      $("spinner").style.display = "none";
-      $("btn-text").textContent = "Processar & Cadastrar na Loja (2x)";
+    function carregarMaisLotes() {
+      loteAtualNum++;
+      carregarTendencias(loteAtualNum);
     }
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js");
+    function renderizarProdutosPrateleira(produtos) {
+      const container = document.getElementById('lista-sugestoes-container');
+      container.innerHTML = '';
+      produtos.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'sugestao-card';
+        card.innerHTML = `
+          <div class="sugestao-titulo">${p.nome}</div>
+          <div class="sugestao-desc">${p.descricao_resumida}</div>
+          <div style="font-size:0.75rem; color:var(--warning);">💡 ${p.motivo_tendencia}</div>
+          <div class="sugestao-footer">
+            <span class="sugestao-preco">Custo Est.: R$ ${p.custo_estimado}</span>
+            <button class="btn-cadastrar-sugestao" onclick="importarSugestao('${p.nome.replace(/'/g, "")}', '${p.descricao_resumida.replace(/'/g, "")}', ${p.custo_estimado})">Importar Produto</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function importarSugestao(nome, desc, custo) {
+      mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
+      document.getElementById('nome').value = nome;
+      document.getElementById('descricao').value = desc;
+      document.getElementById('custo').value = custo;
+      calcularVenda();
+      window.scrollTo({top: 0, behavior: 'smooth'});
     }
   </script>
 </body>
-</html>"""
+</html>
+"""
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
