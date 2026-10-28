@@ -214,16 +214,36 @@ def cadastrar_yampi(alias, user_token, secret_key, titulo, descricao_html, custo
     base_yampi = f"https://api.dooki.com.br/v2/{alias}/catalog"
     headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
     
+    # 1. Tenta listar as marcas existentes para encontrar a marca padrão
     r = requests.get(base_yampi + "/brands", headers=headers, params={"name": NOME_MARCA}, timeout=60)
     brand_id = None
     if r.status_code == 200:
-        for m in r.json().get("data", []):
-            if m.get("name", "").strip().lower() == NOME_MARCA.lower():
+        data_json = r.json()
+        marcas = data_json.get("data", []) if isinstance(data_json, dict) else data_json
+        for m in marcas:
+            if isinstance(m, dict) and m.get("name", "").strip().lower() == NOME_MARCA.lower():
                 brand_id = m["id"]
+                break
+
+    # 2. Se não encontrar, tenta criar a marca obrigatoriamente
     if not brand_id:
         r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": NOME_MARCA, "active": True}, timeout=60)
         if r_brand.status_code in (200, 201):
-            brand_id = r_brand.json()["data"]["id"]
+            res_b = r_brand.json()
+            brand_id = res_b.get("data", {}).get("id") or res_b.get("id")
+
+    # 3. Se mesmo assim a marca não existir, pega a primeira marca disponível na loja para evitar o erro 422
+    if not brand_id:
+        r_all = requests.get(base_yampi + "/brands", headers=headers, timeout=60)
+        if r_all.status_code == 200:
+            all_data = r_all.json()
+            lista_marcas = all_data.get("data", []) if isinstance(all_data, dict) else all_data
+            if lista_marcas and isinstance(lista_marcas[0], dict):
+                brand_id = lista_marcas[0].get("id")
+
+    if not brand_id:
+        registrar("Erro na Yampi: Nenhuma marca encontrada na loja. Crie uma marca manualmente na Yampi.")
+        return False
 
     corpo = {
         "simple": True,
@@ -1081,7 +1101,6 @@ PAGINA = r"""<!doctype html>
     let loteAtualNum = 1;
     let termoAtualBusca = "";
 
-    // Carrega dados salvos do localStorage ao abrir a página
     window.addEventListener('DOMContentLoaded', () => {
       const salvo = localStorage.getItem('dropai_user');
       if (salvo) {
@@ -1195,7 +1214,6 @@ PAGINA = r"""<!doctype html>
         document.getElementById('badge-status-vip').style.display = 'block';
       }
 
-      // Preenche os campos de configuração com os dados salvos do utilizador
       document.getElementById('cfg-plataforma').value = usuarioAtual.plataforma || 'yampi';
       document.getElementById('cfg-url').value = usuarioAtual.loja_url || '';
       document.getElementById('cfg-token').value = usuarioAtual.api_token || '';
