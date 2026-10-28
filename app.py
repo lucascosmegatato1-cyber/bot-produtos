@@ -4,13 +4,11 @@ import time
 import uuid
 import hmac
 import sqlite3
-import struct
-import zlib
 import threading
 from functools import wraps
 
 import requests
-from flask import Flask, request, jsonify, Response, session
+from flask import Flask, request, jsonify, Response, session, send_file
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dropai-secret-key-super-segura-2026")
@@ -334,7 +332,7 @@ def processar(job_id, d):
             reg("Erro inesperado: " + str(erro))
 
 
-# ---------- Rotas API ----------
+# ---------- Rotas API & Ícones Estáticos ----------
 @app.route("/saude")
 def saude():
     return "ok"
@@ -343,6 +341,20 @@ def saude():
 @app.route("/")
 def inicio():
     return Response(PAGINA, mimetype="text/html")
+
+
+@app.route("/icone.png")
+def icone_arquivo():
+    if os.path.exists("icone.png"):
+        return send_file("icone.png", mimetype="image/png")
+    return "Ícone não encontrado", 404
+
+
+@app.route("/favicon.ico")
+def favicon():
+    if os.path.exists("icone.png"):
+        return send_file("icone.png", mimetype="image/png")
+    return "", 204
 
 
 @app.route("/api/auth/registrar", methods=["POST"])
@@ -488,8 +500,8 @@ def manifesto():
         "background_color": "#000000",
         "theme_color": "#00A3FF",
         "icons": [
-            {"src": "/icone-192.png", "sizes": "192x192", "type": "image/png"},
-            {"src": "/icone-512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/icone.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/icone.png", "sizes": "512x512", "type": "image/png"},
         ],
     }
     return Response(json.dumps(dados), mimetype="application/manifest+json")
@@ -501,38 +513,6 @@ def service_worker():
     return Response(js, mimetype="application/javascript")
 
 
-ICONES = {}
-
-
-def gerar_icone(tam):
-    if tam in ICONES:
-        return ICONES[tam]
-    fundo = bytes((0, 0, 0))
-    ciano = bytes((0, 163, 255))
-    a = tam // 4
-    b = tam - a
-    linha_fundo = b"\x00" + fundo * tam
-    linha_meio = b"\x00" + fundo * a + ciano * (b - a) + fundo * (tam - b)
-    linhas = b"".join(linha_meio if a <= y < b else linha_fundo for y in range(tam))
-
-    def bloco(tipo, dados):
-        corpo = tipo + dados
-        return struct.pack(">I", len(dados)) + corpo + struct.pack(">I", zlib.crc32(corpo) & 0xFFFFFFFF)
-
-    cabecalho = struct.pack(">IIBBBBB", tam, tam, 8, 2, 0, 0, 0)
-    png = (b"\x89PNG\r\n\x1a\n" + bloco(b"IHDR", cabecalho)
-            + bloco(b"IDAT", zlib.compress(linhas)) + bloco(b"IEND", b""))
-    ICONES[tam] = png
-    return png
-
-
-@app.route("/icone-<int:tam>.png")
-def icone(tam):
-    if tam not in (192, 512):
-        return Response("não encontrado", 404)
-    return Response(gerar_icone(tam), mimetype="image/png")
-
-
 PAGINA = r"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -541,7 +521,8 @@ PAGINA = r"""<!doctype html>
   <title>DropAI - Multiplataforma Inteligente</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#00A3FF">
-  <link rel="apple-touch-icon" href="/icone-192.png">
+  <link rel="apple-touch-icon" href="/icone.png">
+  <link rel="icon" href="/icone.png" type="image/png">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -591,14 +572,16 @@ PAGINA = r"""<!doctype html>
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
     
-    /* VETOR SVG EXATO DA COROA DA LOGO ORIGINAL */
-    .crown-svg {
-      width: 60px;
-      height: 45px;
-      filter: drop-shadow(0 0 10px rgba(0, 163, 255, 0.8));
+    .app-logo-img {
+      width: 75px;
+      height: 75px;
+      border-radius: 18px;
+      object-fit: cover;
+      border: 2px solid var(--primary);
+      box-shadow: 0 0 20px rgba(0, 163, 255, 0.5);
     }
 
     .auth-logo h1 { 
@@ -624,16 +607,13 @@ PAGINA = r"""<!doctype html>
       gap: 10px;
     }
 
-    .brand-icon {
-      width: 44px;
-      height: 44px;
-      border: 2px solid var(--primary);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: #000;
-      box-shadow: 0 0 15px rgba(0, 163, 255, 0.4);
+    .brand-icon-img {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid var(--primary);
+      object-fit: cover;
+      box-shadow: 0 0 10px rgba(0, 163, 255, 0.4);
     }
 
     .brand-title h1 { font-size: 1.15rem; font-weight: 700; color: var(--text); }
@@ -899,21 +879,10 @@ PAGINA = r"""<!doctype html>
 
   <div class="app-container">
 
-    <!-- TELA DE LOGIN COM COROA SVG IDENTICA À LOGO -->
+    <!-- TELA DE LOGIN COM A SUA LOGO OFICIAL -->
     <div id="auth-screen">
       <div class="auth-logo">
-        <svg class="crown-svg" viewBox="0 0 100 70" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M10 60 L25 25 L50 45 L75 25 L90 60 Z" fill="url(#crown-grad)" />
-          <path d="M5 60 C30 50, 70 50, 95 60 C70 68, 30 68, 5 60 Z" fill="url(#crown-grad)" />
-          <path d="M50 5 L58 22 L50 18 L42 22 Z" fill="#00A3FF" />
-          <defs>
-            <linearGradient id="crown-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#00A3FF" />
-              <stop offset="50%" stop-color="#0081CC" />
-              <stop offset="100%" stop-color="#003B66" />
-            </linearGradient>
-          </defs>
-        </svg>
+        <img src="/icone.png" alt="DropAI Logo" class="app-logo-img">
         <h1>DropAI</h1>
         <p>Automação Multiplataforma Inteligente</p>
       </div>
@@ -938,17 +907,7 @@ PAGINA = r"""<!doctype html>
       <div class="header">
         <div class="brand">
           <div class="brand-icon">
-            <svg style="width:28px; height:22px;" viewBox="0 0 100 70" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M10 60 L25 25 L50 45 L75 25 L90 60 Z" fill="url(#crown-grad-mini)" />
-              <path d="M5 60 C30 50, 70 50, 95 60 C70 68, 30 68, 5 60 Z" fill="url(#crown-grad-mini)" />
-              <path d="M50 5 L58 22 L50 18 L42 22 Z" fill="#00A3FF" />
-              <defs>
-                <linearGradient id="crown-grad-mini" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#00A3FF" />
-                  <stop offset="100%" stop-color="#003B66" />
-                </linearGradient>
-              </defs>
-            </svg>
+            <img src="/icone.png" alt="DropAI" class="brand-icon-img">
           </div>
           <div class="brand-title">
             <h1>DropAI</h1>
