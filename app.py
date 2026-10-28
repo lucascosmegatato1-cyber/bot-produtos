@@ -588,8 +588,27 @@ PAGINA = r"""<!doctype html>
     .auth-logo {
       text-align: center;
       margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
     }
-    .auth-logo h1 { font-size: 2.2rem; font-weight: 800; background: linear-gradient(135deg, #00A3FF, #A78BFA); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    
+    /* VETOR SVG EXATO DA COROA DA LOGO ORIGINAL */
+    .crown-svg {
+      width: 60px;
+      height: 45px;
+      filter: drop-shadow(0 0 10px rgba(0, 163, 255, 0.8));
+    }
+
+    .auth-logo h1 { 
+      font-size: 2.2rem; 
+      font-weight: 800; 
+      background: linear-gradient(135deg, #00A3FF, #FFFFFF); 
+      -webkit-background-clip: text; 
+      -webkit-text-fill-color: transparent; 
+      letter-spacing: -1px;
+    }
     .auth-logo p { font-size: 0.85rem; color: var(--text-muted); }
 
     .header {
@@ -606,26 +625,15 @@ PAGINA = r"""<!doctype html>
     }
 
     .brand-icon {
-      width: 40px;
-      height: 40px;
+      width: 44px;
+      height: 44px;
       border: 2px solid var(--primary);
       border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--primary);
-      font-weight: 800;
-      font-size: 1.2rem;
+      background: #000;
       box-shadow: 0 0 15px rgba(0, 163, 255, 0.4);
-      position: relative;
-    }
-
-    .brand-icon::after {
-      content: '♚';
-      position: absolute;
-      top: -8px;
-      font-size: 0.9rem;
-      text-shadow: 0 0 5px rgba(0, 163, 255, 1);
     }
 
     .brand-title h1 { font-size: 1.15rem; font-weight: 700; color: var(--text); }
@@ -759,7 +767,6 @@ PAGINA = r"""<!doctype html>
     .btn-submit:active { transform: scale(0.98); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* ESTILO DO GUIA PASSO A PASSO VISUAL */
     .tutorial-box {
       margin-top: 16px;
       background: rgba(0, 163, 255, 0.03);
@@ -892,11 +899,23 @@ PAGINA = r"""<!doctype html>
 
   <div class="app-container">
 
-    <!-- TELA DE LOGIN / CADASTRO -->
+    <!-- TELA DE LOGIN COM COROA SVG IDENTICA À LOGO -->
     <div id="auth-screen">
       <div class="auth-logo">
-        <h1>♚ DropAI</h1>
-        <p>Automação Multiplataforma</p>
+        <svg class="crown-svg" viewBox="0 0 100 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M10 60 L25 25 L50 45 L75 25 L90 60 Z" fill="url(#crown-grad)" />
+          <path d="M5 60 C30 50, 70 50, 95 60 C70 68, 30 68, 5 60 Z" fill="url(#crown-grad)" />
+          <path d="M50 5 L58 22 L50 18 L42 22 Z" fill="#00A3FF" />
+          <defs>
+            <linearGradient id="crown-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#00A3FF" />
+              <stop offset="50%" stop-color="#0081CC" />
+              <stop offset="100%" stop-color="#003B66" />
+            </linearGradient>
+          </defs>
+        </svg>
+        <h1>DropAI</h1>
+        <p>Automação Multiplataforma Inteligente</p>
       </div>
       <div class="card">
         <div class="form-group">
@@ -918,7 +937,19 @@ PAGINA = r"""<!doctype html>
     <div id="app-screen" style="display: none; flex-direction: column; gap: 16px;">
       <div class="header">
         <div class="brand">
-          <div class="brand-icon">⚡</div>
+          <div class="brand-icon">
+            <svg style="width:28px; height:22px;" viewBox="0 0 100 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 60 L25 25 L50 45 L75 25 L90 60 Z" fill="url(#crown-grad-mini)" />
+              <path d="M5 60 C30 50, 70 50, 95 60 C70 68, 30 68, 5 60 Z" fill="url(#crown-grad-mini)" />
+              <path d="M50 5 L58 22 L50 18 L42 22 Z" fill="#00A3FF" />
+              <defs>
+                <linearGradient id="crown-grad-mini" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#00A3FF" />
+                  <stop offset="100%" stop-color="#003B66" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
           <div class="brand-title">
             <h1>DropAI</h1>
             <p id="user-email-display">Painel do Lojista</p>
