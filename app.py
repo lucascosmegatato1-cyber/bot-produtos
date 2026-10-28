@@ -35,7 +35,7 @@ MODELOS = []
 LOCK_PROCESSAMENTO = threading.Lock()
 
 
-# ---------- Base de Dados SQLite Atualizada ----------
+# ---------- Base de Dados SQLite ----------
 def init_db():
     conn = sqlite3.connect("dropai.db")
     cursor = conn.cursor()
@@ -45,7 +45,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
             eh_vip INTEGER DEFAULT 0,
-             plataforma TEXT DEFAULT 'yampi',
+            plataforma TEXT DEFAULT 'yampi',
             loja_url TEXT,
             api_token TEXT,
             api_secret TEXT
@@ -193,7 +193,6 @@ def cadastrar_yampi(alias, user_token, secret_key, titulo, descricao_html, custo
     base_yampi = f"https://api.dooki.com.br/v2/{alias}/catalog"
     headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
     
-    # Obter ou criar marca
     r = requests.get(base_yampi + "/brands", headers=headers, params={"name": NOME_MARCA}, timeout=60)
     brand_id = None
     if r.status_code == 200:
@@ -227,7 +226,6 @@ def cadastrar_yampi(alias, user_token, secret_key, titulo, descricao_html, custo
 
 
 def cadastrar_shopify(loja_url, access_token, titulo, descricao_html, custo, venda, sku, registrar):
-    # Limpa URL da loja Shopify (ex: minhaloja.myshopify.com)
     loja_url = loja_url.replace("https://", "").replace("http://", "").strip("/")
     url = f"https://{loja_url}/admin/api/2024-01/products.json"
     headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
@@ -761,6 +759,46 @@ PAGINA = r"""<!doctype html>
     .btn-submit:active { transform: scale(0.98); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* ESTILO DO GUIA PASSO A PASSO VISUAL */
+    .tutorial-box {
+      margin-top: 16px;
+      background: rgba(0, 163, 255, 0.03);
+      border: 1px solid rgba(0, 163, 255, 0.2);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .tutorial-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tutorial-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+    .step-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .step-badge {
+      background: var(--primary);
+      color: #000;
+      font-weight: 800;
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
     .spinner {
       width: 18px;
       height: 18px;
@@ -931,6 +969,15 @@ PAGINA = r"""<!doctype html>
           </div>
 
           <button type="button" class="btn-submit" onclick="salvarConfigLoja()">💾 Salvar Configurações</button>
+
+          <!-- GUIA PASSO A PASSO DINÂMICO LOGO ABAIXO DO BOTÃO -->
+          <div class="tutorial-box">
+            <div class="tutorial-title">📖 Como encontrar suas credenciais:</div>
+            <div class="tutorial-steps" id="tutorial-texto">
+              <!-- Preenchido via JavaScript dinamicamente -->
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -1018,10 +1065,13 @@ PAGINA = r"""<!doctype html>
         const user = JSON.parse(savedUser);
         entrarNoSistema(user);
       }
+      atualizarLabelsConfig();
     };
 
     function atualizarLabelsConfig() {
       const plat = $("cfg-plataforma").value;
+      const tut = $("tutorial-texto");
+
       if (plat === "yampi") {
         $("lbl-url").textContent = "Yampi Alias (Nome da Loja)";
         $("cfg-url").placeholder = "ex: minhaloja";
@@ -1030,18 +1080,36 @@ PAGINA = r"""<!doctype html>
         $("group-secret").style.display = "block";
         $("lbl-secret").textContent = "Yampi User-Secret-Key";
         $("cfg-secret").placeholder = "Cole sua User-Secret-Key...";
+
+        tut.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Acesse o painel da sua Yampi e vá em <strong>Configurações > API</strong>.</span></div>
+          <div class="step-item"><span class="step-badge">2</span><span>Copie o <strong>Alias</strong> (o nome que fica na URL da sua loja).</span></div>
+          <div class="step-item"><span class="step-badge">3</span><span>Gere ou copie o seu <strong>User-Token</strong> e a <strong>User-Secret-Key</strong> e cole acima.</span></div>
+        `;
       } else if (plat === "shopify") {
         $("lbl-url").textContent = "URL da Loja Shopify";
         $("cfg-url").placeholder = "ex: minhaloja.myshopify.com";
         $("lbl-token").textContent = "Admin API Access Token";
         $("cfg-token").placeholder = "shpat_xxxxxxxx...";
         $("group-secret").style.display = "none";
+
+        tut.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Na Shopify, vá em <strong>Apps > Desenvolver aplicativos</strong>.</span></div>
+          <div class="step-item"><span class="step-badge">2</span><span>Crie um app e libere permissão de escrita em <strong>Produtos</strong> na API Admin.</span></div>
+          <div class="step-item"><span class="step-badge">3</span><span>Instale o app e copie o <strong>Token de Acesso da API Admin</strong> (começa com shpat_).</span></div>
+        `;
       } else if (plat === "nuvemshop") {
         $("lbl-url").textContent = "ID da Loja Nuvemshop";
         $("cfg-url").placeholder = "ex: 1234567";
         $("lbl-token").textContent = "Access Token (Bearer)";
         $("cfg-token").placeholder = "Cole o token da Nuvemshop...";
         $("group-secret").style.display = "none";
+
+        tut.innerHTML = `
+          <div class="step-item"><span class="step-badge">1</span><span>Acesse o painel de parceiros ou desenvolvedores da Nuvemshop.</span></div>
+          <div class="step-item"><span class="step-badge">2</span><span>Crie um aplicativo privado para obter o seu <strong>Store ID</strong> (ID da loja).</span></div>
+          <div class="step-item"><span class="step-badge">3</span><span>Copie o <strong>Access Token</strong> gerado e cole nos campos acima.</span></div>
+        `;
       }
     }
 
