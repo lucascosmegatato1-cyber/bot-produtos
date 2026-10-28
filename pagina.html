@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>DropAI - Multiplataforma Inteligente</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#00A3FF">
+  <link rel="apple-touch-icon" href="/icone.png">
+  <link rel="icon" href="/icone.png" type="image/png">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #000000;
+      --card-bg: #111111;
+      --input-bg: #030303;
+      --border: #4F4F4F;
+      --primary: #00A3FF;
+      --primary-hover: #0081CC;
+      --text: #F9FAFB;
+      --text-muted: #9CA3AF;
+      --accent: #00E676;
+      --danger: #EF4444;
+      --warning: #F59E0B;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 12px;
+    }
+
+    .app-container {
+      width: 100%;
+      max-width: 540px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #auth-screen, #recuperar-screen {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 90vh;
+      gap: 20px;
+    }
+
+    .auth-logo {
+      text-align: center;
+      margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .app-logo-img {
+      width: 75px;
+      height: 75px;
+      border-radius: 18px;
+      object-fit: cover;
+      border: 2px solid var(--primary);
+      box-shadow: 0 0 20px rgba(0, 163, 255, 0.5);
+    }
+
+    .auth-logo h1 { 
+      font-size: 2.2rem; 
+      font-weight: 800; 
+      background: linear-gradient(135deg, #00A3FF, #FFFFFF); 
+      -webkit-background-clip: text; 
+      -webkit-text-fill-color: transparent; 
+      letter-spacing: -1px;
+    }
+    .auth-logo p { font-size: 0.85rem; color: var(--text-muted); }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 4px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon-img {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid var(--primary);
+      object-fit: cover;
+      box-shadow: 0 0 10px rgba(0, 163, 255, 0.4);
+    }
+
+    .brand-title h1 { font-size: 1.15rem; font-weight: 700; color: var(--text); }
+    .brand-title p { font-size: 0.75rem; color: var(--text-muted); }
+
+    .badge-vip {
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: var(--warning);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    .badge-yampi {
+      background: rgba(0, 230, 118, 0.1);
+      border: 1px solid rgba(0, 230, 118, 0.3);
+      color: var(--accent);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .tabs {
+      display: flex;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 4px;
+      gap: 4px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 12px 6px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .tab-btn.active {
+      background: var(--primary);
+      color: #000;
+      box-shadow: 0 0 10px rgba(0, 163, 255, 0.3);
+    }
+
+    .tab-content { display: none; flex-direction: column; gap: 16px; }
+    .tab-content.active { display: flex; }
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7);
+    }
+
+    .form-group { margin-bottom: 16px; }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      background-color: var(--input-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 10px rgba(0, 163, 255, 0.2);
+    }
+
+    textarea { min-height: 80px; resize: vertical; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .calc-box {
+      background: rgba(3, 3, 3, 0.9);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .calc-box span { font-size: 0.75rem; color: var(--text-muted); }
+    .calc-box strong { font-size: 1.1rem; color: var(--accent); }
+
+    .hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+    .check-linha { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px; cursor: pointer; }
+    .check-linha input { width: 18px; height: 18px; padding: 0; accent-color: var(--primary); }
+    .aviso-whats { display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: var(--warning);
+      border-radius: 12px; padding: 10px 14px; font-size: 0.8rem; cursor: pointer; }
+    .btn-sec { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+    .btn-submit {
+      width: 100%;
+      background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+      color: #000;
+      border: none;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 163, 255, 0.3);
+      transition: transform 0.1s, opacity 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-submit:active { transform: scale(0.98); }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(0,0,0,0.3);
+      border-radius: 50%;
+      border-top-color: #000;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status-card {
+      display: none;
+      border-left: 4px solid var(--primary);
+    }
+
+    .status-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .status-title { font-weight: 700; font-size: 0.95rem; }
+
+    .logs-box {
+      background: #030303;
+      border-radius: 10px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #34d399;
+      max-height: 150px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+
+    .preview-box {
+      margin-top: 12px;
+      background: rgba(255,255,255,0.01);
+      border-radius: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .preview-title { font-size: 0.85rem; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
+    .preview-content { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
+    .preview-frame { width: 100%; height: 260px; border: 0; border-radius: 8px; background: #fff; }
+
+    .sugestao-card {
+      background: rgba(255,255,255,0.01);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sugestao-titulo { font-size: 0.95rem; font-weight: 700; color: #fff; }
+    .sugestao-desc { font-size: 0.8rem; color: var(--text-muted); }
+    .sugestao-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+    .sugestao-preco { font-size: 0.9rem; font-weight: 700; color: var(--primary); }
+    .btn-cadastrar-sugestao {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    
+    .link-acao {
+      text-align: center;
+      margin-top: 12px;
+    }
+    .link-acao a {
+      color: var(--primary);
+      font-size: 0.85rem;
+      text-decoration: none;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .link-acao a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- TELA DE LOGIN -->
+    <div id="auth-screen">
+      <div class="auth-logo">
+        <img src="/icone.png" alt="DropAI Logo" class="app-logo-img">
+        <h1>DropAI</h1>
+        <p>Automação Multiplataforma Inteligente</p>
+      </div>
+      <div class="card">
+        <form id="login-form" onsubmit="fazerLogin(); return false;">
+          <div class="form-group">
+            <label for="auth-email">E-mail de Acesso</label>
+            <input type="email" id="auth-email" name="email" placeholder="seu@email.com" autocomplete="username" required>
+          </div>
+          <div class="form-group">
+            <label for="auth-senha">Senha</label>
+            <input type="password" id="auth-senha" name="password" placeholder="Mínimo de 8 caracteres" autocomplete="current-password" required>
+          </div>
+          <label class="check-linha">
+            <input type="checkbox" id="auth-lembrar" checked>
+            <span>Manter conectado neste aparelho (30 dias)</span>
+          </label>
+          <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+            <button type="submit" class="btn-submit">Entrar</button>
+            <button type="button" class="btn-submit" style="background: transparent; border: 1px solid var(--border); color: var(--text);" onclick="mostrarCadastro()">Criar Conta</button>
+          </div>
+        </form>
+
+        <div id="bloco-cadastro" style="display:none;">
+          <div class="form-group">
+            <label for="auth-telefone">WhatsApp (opcional, para recuperar a senha)</label>
+            <input type="tel" id="auth-telefone" placeholder="(11) 91234-5678" autocomplete="tel">
+            <div class="hint">Você confirma o número depois, na aba Conta. Só um número confirmado serve para recuperar a senha.</div>
+          </div>
+          <button type="button" class="btn-submit" onclick="fazerRegisto()">✅ Criar minha conta</button>
+        </div>
+
+        <div class="link-acao">
+          <a onclick="mostrarTelaRecuperacao()">🔑 Esqueci a minha senha</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- TELA DE RECUPERAÇÃO DE SENHA POR CÓDIGO -->
+    <div id="recuperar-screen" style="display: none;">
+      <div class="auth-logo">
+        <img src="/icone.png" alt="DropAI Logo" class="app-logo-img">
+        <h1>Recuperar Senha</h1>
+        <p>Enviaremos um código de 6 dígitos</p>
+      </div>
+      <div class="card">
+        <div id="passo-1-email">
+          <div class="form-group">
+            <label for="rec-email">E-mail Cadastrado</label>
+            <input type="email" id="rec-email" placeholder="seu@email.com">
+          </div>
+          <div id="botoes-canal" style="display:flex; flex-direction:column; gap:10px;"></div>
+          <div class="hint" id="aviso-canais"></div>
+        </div>
+
+        <div id="passo-2-codigo" style="display: none;">
+          <div class="form-group">
+            <label for="rec-codigo">Código de Verificação (6 dígitos)</label>
+            <input type="text" id="rec-codigo" placeholder="ex: 482910" inputmode="numeric" autocomplete="one-time-code">
+          </div>
+          <div class="form-group">
+            <label for="rec-nova-senha">Nova Senha</label>
+            <input type="password" id="rec-nova-senha" placeholder="Mínimo de 8 caracteres" autocomplete="new-password">
+          </div>
+          <button type="button" class="btn-submit" onclick="confirmarRedefinicaoSenha()">🔒 Redefinir Senha</button>
+        </div>
+
+        <div class="link-acao" style="margin-top: 15px;">
+          <a onclick="voltarParaLogin()">⬅️ Voltar para o Login</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAINEL PRINCIPAL -->
+    <div id="app-screen" style="display: none; flex-direction: column; gap: 16px;">
+      <div class="header">
+        <div class="brand">
+          <div class="brand-icon">
+            <img src="/icone.png" alt="DropAI" class="brand-icon-img">
+          </div>
+          <div class="brand-title">
+            <h1>DropAI</h1>
+            <p id="user-email-display">Painel do Lojista</p>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="badge-vip" id="badge-status-vip" style="display:none;">👑 VIP</div>
+          <div class="badge-yampi" id="status-conexao">● Conectado</div>
+          <button onclick="fazerLogout()" style="background: transparent; border: none; color: var(--danger); font-size: 0.75rem; font-weight: 700; cursor: pointer;">Sair</button>
+        </div>
+      </div>
+
+      <!-- ABAS -->
+      <div class="tabs">
+        <button class="tab-btn active" onclick="mudarAba('manual', this)">Importar</button>
+        <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Prateleira IA</button>
+        <button class="tab-btn" onclick="mudarAba('config', this)">⚙️ Loja</button>
+        <button class="tab-btn" onclick="mudarAba('conta', this)">👤 Conta</button>
+      </div>
+
+      <div class="aviso-whats" id="aviso-whatsapp" onclick="mudarAba('conta', document.querySelectorAll('.tab-btn')[3])">
+        ⚠️ Confirme seu WhatsApp na aba Conta para poder recuperar sua senha se esquecer.
+      </div>
+
+      <!-- ABA CONTA -->
+      <div id="aba-conta" class="tab-content">
+        <div class="card">
+          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">👤 Segurança da Conta</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">
+            Com um WhatsApp confirmado, você recebe o código para redefinir a senha caso esqueça.
+          </p>
+
+          <div class="calc-box" style="margin-bottom:16px;">
+            <span>WhatsApp de recuperação</span>
+            <strong id="conta-status-whats" style="color: var(--text);">Não cadastrado</strong>
+          </div>
+
+          <div id="conta-form-telefone">
+            <div class="form-group">
+              <label for="conta-telefone">Número com DDD</label>
+              <input type="tel" id="conta-telefone" placeholder="(11) 91234-5678" autocomplete="tel">
+            </div>
+            <button type="button" class="btn-submit" id="btn-enviar-codigo-tel" onclick="enviarCodigoTelefone()">📲 Enviar código no WhatsApp</button>
+          </div>
+
+          <div id="conta-form-codigo" style="display:none; margin-top:16px;">
+            <div class="form-group">
+              <label for="conta-codigo">Código recebido no WhatsApp</label>
+              <input type="text" id="conta-codigo" placeholder="ex: 482910" inputmode="numeric" autocomplete="one-time-code">
+            </div>
+            <button type="button" class="btn-submit" onclick="confirmarTelefone()">✅ Confirmar número</button>
+          </div>
+
+          <div class="link-acao" id="conta-remover" style="display:none;">
+            <a onclick="removerTelefone()" style="color: var(--danger);">Remover WhatsApp da conta</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ABA CONFIGURAÇÕES DA LOJA -->
+      <div id="aba-config" class="tab-content">
+        <div class="card">
+          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">⚙️ Configuração da Plataforma</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Informe os dados da sua loja Yampi (Configurações &gt; Chaves de API).</p>
+          
+          <div class="form-group">
+            <label for="cfg-plataforma">Plataforma</label>
+            <select id="cfg-plataforma">
+              <option value="yampi">Yampi</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-url">Yampi Alias (Nome da Loja)</label>
+            <input type="text" id="cfg-url" placeholder="alias-da-sua-loja">
+          </div>
+          
+          <div class="form-group">
+            <label for="cfg-token">Yampi User-Token</label>
+            <input type="password" id="cfg-token" placeholder="Já salvo. Preencha só para trocar" autocomplete="off">
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-secret">Yampi User-Secret-Key</label>
+            <input type="password" id="cfg-secret" placeholder="Já salvo. Preencha só para trocar" autocomplete="off">
+          </div>
+
+          <button type="button" class="btn-submit" onclick="salvarConfigLoja()">💾 Salvar Configurações</button>
+        </div>
+      </div>
+
+      <!-- ABA IMPORTAR MANUAL -->
+      <div id="aba-manual" class="tab-content active">
+        <div class="card">
+          <form id="bot-form" onsubmit="return false;">
+            <div class="form-group">
+              <label for="nome">Link ou Nome do Produto Original</label>
+              <input type="text" id="nome" placeholder="Cole o link ou nome do produto..." required>
+            </div>
+
+            <div class="form-group">
+              <label for="descricao">Detalhes / Avaliações Originais</label>
+              <textarea id="descricao" placeholder="Detalhes para a IA otimizar..."></textarea>
+            </div>
+
+            <div class="grid-2 form-group">
+              <div>
+                <label for="custo">Preço de Custo (R$)</label>
+                <input type="text" id="custo" placeholder="0.00" required oninput="calcularVenda()">
+              </div>
+              <div class="calc-box">
+                <span>Preço de Venda (2x)</span>
+                <strong id="calc-venda">R$ 0,00</strong>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="imagens">Imagens do Produto (links diretos, um por linha)</label>
+              <textarea id="imagens" placeholder="https://.../foto1.jpg&#10;https://.../foto2.jpg"></textarea>
+              <div class="hint">Se deixar vazio e o campo de cima for um link, o DropAI tenta buscar as fotos da página. Use só imagens que você tem direito de usar.</div>
+            </div>
+
+            <div class="grid-2 form-group">
+              <div>
+                <label for="estoque">Estoque inicial</label>
+                <input type="number" id="estoque" value="50" min="0" inputmode="numeric">
+              </div>
+              <div>
+                <label for="peso">Peso em kg (opcional)</label>
+                <input type="text" id="peso" placeholder="vazio = IA estima" inputmode="decimal">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="sku">SKU Personalizado (Opcional)</label>
+              <input type="text" id="sku" placeholder="Deixe em branco para auto gerar...">
+            </div>
+
+            <button type="button" class="btn-submit" id="btn-enviar" onclick="enviarProduto()">
+              <div class="spinner" id="spinner-enviar"></div>
+              <span>🚀 Importar e Cadastrar Produto</span>
+            </button>
+          </form>
+        </div>
+
+        <div class="card status-card" id="card-status">
+          <div class="status-header">
+            <span class="status-title" id="status-titulo">Processando...</span>
+            <span id="status-badge" style="font-size: 0.75rem; font-weight: 750;">Aguardando</span>
+          </div>
+          <div class="logs-box" id="logs-box">Iniciando tarefas...</div>
+          <div class="preview-box" id="preview-box" style="display:none;">
+            <div class="preview-title" id="prev-nome-titulo">Título Gerado</div>
+            <iframe class="preview-frame" id="prev-desc-html" sandbox="" title="Prévia da descrição"></iframe>
+          </div>
+        </div>
+      </div>
+
+      <!-- ABA PRATELEIRA / IA BUSCA DE TENDÊNCIAS -->
+      <div id="aba-ia" class="tab-content">
+        <div class="card">
+          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">✨ Pesquisa e Prateleira IA</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Procure produtos em alta por nicho ou palavra-chave.</p>
+          
+          <div class="form-group">
+            <label for="ia-termo">Comando / Termo de Pesquisa</label>
+            <input type="text" id="ia-termo" placeholder="ex: novidades do mercado, gadgets pets, cosméticos...">
+          </div>
+
+          <button type="button" class="btn-submit" onclick="carregarTendencias(1)">
+            🔍 Pesquisar com DropAI (20 opções)
+          </button>
+        </div>
+
+        <div id="lista-sugestoes-container"></div>
+        <button type="button" id="btn-mais-lotes" class="btn-carregar-mais" style="display:none;" onclick="carregarMaisLotes()">Carregar Mais 20 Opções</button>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    let usuarioAtual = null;
+    let loteAtualNum = 1;
+
+    // Chamada à API: a sessão vai num cookie protegido (HttpOnly), o JavaScript nunca vê o token
+    function api(caminho, corpo, metodo) {
+      const opcoes = { method: metodo || (corpo ? 'POST' : 'GET'), headers: {'Content-Type': 'application/json'} };
+      if (corpo) opcoes.body = JSON.stringify(corpo);
+      return fetch(caminho, opcoes).then(r => r.json().catch(() => ({})).then(body => {
+        if (r.status === 401 && usuarioAtual) { sessaoExpirou(); }
+        return { status: r.status, body };
+      }));
+    }
+
+    function esc(t) {
+      return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function sessaoExpirou() {
+      usuarioAtual = null;
+      document.getElementById('app-screen').style.display = 'none';
+      document.getElementById('auth-screen').style.display = 'flex';
+      alert('Sua sessão expirou. Entre novamente.');
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      localStorage.removeItem('dropai_user'); // limpa dados antigos (versões anteriores guardavam chaves aqui)
+      api('/api/auth/eu').then(res => {
+        if (res.status === 200 && res.body.sucesso) {
+          usuarioAtual = res.body.user;
+          entrarNoPainel();
+        }
+      });
+    });
+
+    function mudarAba(nome, btn) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById('aba-' + nome).classList.add('active');
+      if(btn) btn.classList.add('active');
+    }
+
+    function mostrarTelaRecuperacao() {
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('recuperar-screen').style.display = 'flex';
+      document.getElementById('passo-1-email').style.display = 'block';
+      document.getElementById('passo-2-codigo').style.display = 'none';
+
+      // mostra só os canais que o servidor realmente tem configurados
+      const botoes = document.getElementById('botoes-canal');
+      const aviso = document.getElementById('aviso-canais');
+      botoes.innerHTML = '';
+      aviso.innerText = '';
+      api('/api/auth/canais').then(res => {
+        const c = res.body || {};
+        if (c.whatsapp) botoes.appendChild(criarBotaoCanal('💬 Receber código no WhatsApp', 'whatsapp', false));
+        if (c.email) botoes.appendChild(criarBotaoCanal('✉️ Receber código por e-mail', 'email', !!c.whatsapp));
+        if (!c.whatsapp && !c.email) {
+          aviso.innerText = 'A recuperação automática ainda não está disponível. Fale com o suporte para redefinir sua senha.';
+        } else if (c.whatsapp) {
+          aviso.innerText = 'O WhatsApp só funciona se você confirmou seu número na aba Conta.';
+        }
+      });
+    }
+
+    function criarBotaoCanal(texto, canal, secundario) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn-submit' + (secundario ? ' btn-sec' : '');
+      b.innerText = texto;
+      b.addEventListener('click', () => solicitarCodigoRecuperacao(canal));
+      return b;
+    }
+
+    function voltarParaLogin() {
+      document.getElementById('recuperar-screen').style.display = 'none';
+      document.getElementById('auth-screen').style.display = 'flex';
+    }
+
+    function solicitarCodigoRecuperacao(canal) {
+      const email = document.getElementById('rec-email').value.trim().toLowerCase();
+      if(!email) { alert('Digite o seu e-mail cadastrado.'); return; }
+
+      api('/api/auth/enviar-codigo', {email, canal}).then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          alert(res.body.mensagem);
+          document.getElementById('passo-1-email').style.display = 'none';
+          document.getElementById('passo-2-codigo').style.display = 'block';
+        } else {
+          alert(res.body.erro || 'Erro ao enviar código.');
+        }
+      });
+    }
+
+    function confirmarRedefinicaoSenha() {
+      const email = document.getElementById('rec-email').value.trim().toLowerCase();
+      const codigo = document.getElementById('rec-codigo').value.trim();
+      const nova_senha = document.getElementById('rec-nova-senha').value;
+
+      if(!codigo || !nova_senha) {
+        alert('Preencha o código e a nova senha.');
+        return;
+      }
+      if(nova_senha.length < 8) { alert('A nova senha precisa ter pelo menos 8 caracteres.'); return; }
+
+      api('/api/auth/redefinir-senha', {email, codigo, nova_senha}).then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          alert(res.body.mensagem);
+          document.getElementById('rec-codigo').value = '';
+          document.getElementById('rec-nova-senha').value = '';
+          voltarParaLogin();
+        } else {
+          alert(res.body.erro || 'Código inválido ou expirado.');
+        }
+      });
+    }
+
+    function fazerLogin() {
+      const email = document.getElementById('auth-email').value.trim().toLowerCase();
+      const senha = document.getElementById('auth-senha').value;
+      if(!email || !senha) { alert('Preencha e-mail e senha.'); return; }
+
+      const lembrar = document.getElementById('auth-lembrar').checked;
+      api('/api/auth/login', {email, senha, lembrar}).then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          usuarioAtual = res.body.user;
+          document.getElementById('auth-senha').value = '';
+          entrarNoPainel();
+        } else {
+          alert(res.body.erro || 'E-mail ou senha incorretos.');
+        }
+      });
+    }
+
+    function mostrarCadastro() {
+      const bloco = document.getElementById('bloco-cadastro');
+      bloco.style.display = bloco.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function fazerRegisto() {
+      const email = document.getElementById('auth-email').value.trim().toLowerCase();
+      const senha = document.getElementById('auth-senha').value;
+      const telefone = document.getElementById('auth-telefone').value.trim();
+      if(!email || !senha) { alert('Preencha e-mail e senha.'); return; }
+      if(senha.length < 8) { alert('A senha precisa ter pelo menos 8 caracteres.'); return; }
+
+      api('/api/auth/registrar', {email, senha, telefone}).then(res => {
+        if(res.status === 200 && res.body.sucesso) {
+          document.getElementById('bloco-cadastro').style.display = 'none';
+          alert('Conta criada com sucesso! Clique em Entrar.' + (telefone ? ' Depois confirme seu WhatsApp na aba Conta.' : ''));
+        } else {
+          alert(res.body.erro || 'Erro ao registrar');
+        }
+      });
+    }
+
+    function entrarNoPainel() {
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('recuperar-screen').style.display = 'none';
+      document.getElementById('app-screen').style.display = 'flex';
+      document.getElementById('user-email-display').innerText = usuarioAtual.email;
+
+      document.getElementById('badge-status-vip').style.display = usuarioAtual.eh_vip ? 'block' : 'none';
+
+      document.getElementById('cfg-plataforma').value = usuarioAtual.plataforma || 'yampi';
+      document.getElementById('cfg-url').value = usuarioAtual.loja_url || '';
+      document.getElementById('cfg-token').value = '';
+      document.getElementById('cfg-secret').value = '';
+
+      atualizarStatusWhatsapp();
+
+      // Se a loja ainda não foi configurada, leva o usuário direto para a aba Loja
+      if(!usuarioAtual.loja_configurada) {
+        mudarAba('config', document.querySelectorAll('.tab-btn')[2]);
+      }
+    }
+
+    // ---------- Conta: WhatsApp de recuperação ----------
+    function atualizarStatusWhatsapp() {
+      const ok = usuarioAtual.telefone_verificado;
+      const status = document.getElementById('conta-status-whats');
+      status.innerText = ok ? '✅ Confirmado: ' + usuarioAtual.telefone_mascarado : 'Não confirmado';
+      status.style.color = ok ? 'var(--accent)' : 'var(--text)';
+      document.getElementById('conta-remover').style.display = (usuarioAtual.telefone_mascarado) ? 'block' : 'none';
+      document.getElementById('conta-form-codigo').style.display = 'none';
+      document.getElementById('conta-telefone').value = '';
+      document.getElementById('btn-enviar-codigo-tel').innerText = ok ? '📲 Trocar número (enviar código)' : '📲 Enviar código no WhatsApp';
+
+      const aviso = document.getElementById('aviso-whatsapp');
+      aviso.style.display = 'none';
+      if (!ok) {
+        api('/api/auth/canais').then(res => {
+          if (res.body && res.body.whatsapp) aviso.style.display = 'block';
+        });
+      }
+    }
+
+    function enviarCodigoTelefone() {
+      const telefone = document.getElementById('conta-telefone').value.trim();
+      if(!telefone) { alert('Digite o número com DDD.'); return; }
+      api('/api/conta/telefone/enviar', {telefone}).then(res => {
+        if(res.body.sucesso) {
+          alert(res.body.mensagem);
+          document.getElementById('conta-form-codigo').style.display = 'block';
+        } else {
+          alert(res.body.erro || 'Erro ao enviar o código.');
+        }
+      });
+    }
+
+    function confirmarTelefone() {
+      const codigo = document.getElementById('conta-codigo').value.trim();
+      if(!codigo) { alert('Digite o código recebido.'); return; }
+      api('/api/conta/telefone/confirmar', {codigo}).then(res => {
+        if(res.body.sucesso) {
+          usuarioAtual.telefone_verificado = true;
+          usuarioAtual.telefone_mascarado = res.body.telefone_mascarado;
+          document.getElementById('conta-codigo').value = '';
+          atualizarStatusWhatsapp();
+          alert('WhatsApp confirmado!');
+        } else {
+          alert(res.body.erro || 'Código inválido ou expirado.');
+        }
+      });
+    }
+
+    function removerTelefone() {
+      if(!confirm('Remover o WhatsApp da conta? Você não poderá recuperar a senha por ele.')) return;
+      api('/api/conta/telefone/remover', {}).then(res => {
+        if(res.body.sucesso) {
+          usuarioAtual.telefone_verificado = false;
+          usuarioAtual.telefone_mascarado = '';
+          atualizarStatusWhatsapp();
+        }
+      });
+    }
+
+    function fazerLogout() {
+      api('/api/auth/sair', {}).then(() => {
+        usuarioAtual = null;
+        document.getElementById('app-screen').style.display = 'none';
+        document.getElementById('auth-screen').style.display = 'flex';
+      });
+    }
+
+    function salvarConfigLoja() {
+      if(!usuarioAtual) return;
+      const plataforma = document.getElementById('cfg-plataforma').value;
+      const loja_url = document.getElementById('cfg-url').value.trim();
+      const api_token = document.getElementById('cfg-token').value.trim();
+      const api_secret = document.getElementById('cfg-secret').value.trim();
+
+      api('/api/auth/salvar-config', {plataforma, loja_url, api_token, api_secret}).then(res => {
+        if(res.body.sucesso) {
+          usuarioAtual.plataforma = plataforma;
+          usuarioAtual.loja_url = loja_url;
+          if(api_token) usuarioAtual.loja_configurada = true;
+          document.getElementById('cfg-token').value = '';
+          document.getElementById('cfg-secret').value = '';
+          alert('Configurações salvas!');
+        } else {
+          alert(res.body.erro || 'Erro ao salvar');
+        }
+      });
+    }
+
+    function calcularVenda() {
+      const custoStr = document.getElementById('custo').value.replace(',', '.');
+      const custo = parseFloat(custoStr) || 0;
+      const venda = custo * 2.0;
+      document.getElementById('calc-venda').innerText = 'R$ ' + venda.toFixed(2).replace('.', ',');
+    }
+
+    function enviarProduto() {
+      const nome = document.getElementById('nome').value.trim();
+      const descricao = document.getElementById('descricao').value.trim();
+      const custo = document.getElementById('custo').value.trim();
+      const sku = document.getElementById('sku').value.trim();
+      const imagens = document.getElementById('imagens').value.trim();
+      const estoque = document.getElementById('estoque').value.trim();
+      const peso = document.getElementById('peso').value.trim();
+
+      if(!nome || !custo) {
+        alert('Preencha o nome e o preço de custo.');
+        return;
+      }
+
+      const btn = document.getElementById('btn-enviar');
+      const spinner = document.getElementById('spinner-enviar');
+      btn.disabled = true;
+      spinner.style.display = 'block';
+
+      const cardStatus = document.getElementById('card-status');
+      const logsBox = document.getElementById('logs-box');
+      cardStatus.style.display = 'block';
+      logsBox.innerText = 'Enviando produto para o motor DropAI...';
+      document.getElementById('preview-box').style.display = 'none';
+
+      api('/api/produtos', {nome, descricao, custo, sku, imagens, estoque, peso})
+      .then(res => {
+        if(res.body.erro) {
+          alert(res.body.erro);
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          return;
+        }
+        monitorarJob(res.body.id);
+      })
+      .catch(err => {
+        alert('Erro de conexão');
+        btn.disabled = false;
+        spinner.style.display = 'none';
+      });
+    }
+
+    function monitorarJob(jobId) {
+      const interval = setInterval(() => {
+        api('/api/status/' + jobId).then(res => {
+          const job = res.body;
+          if(!job.log) { clearInterval(interval); return; }
+          const logsBox = document.getElementById('logs-box');
+          logsBox.innerText = job.log.join('\n');
+          logsBox.scrollTop = logsBox.scrollHeight;
+
+          if(job.status === 'ok' || job.status === 'erro') {
+            clearInterval(interval);
+            document.getElementById('btn-enviar').disabled = false;
+            document.getElementById('spinner-enviar').style.display = 'none';
+            document.getElementById('status-badge').innerText = job.status === 'ok' ? 'Concluído ✅' : 'Erro ❌';
+            
+            if(job.resultado_ia) {
+              document.getElementById('prev-nome-titulo').innerText = job.resultado_ia.titulo;
+              // a prévia roda isolada (sandbox): scripts da descrição não executam
+              document.getElementById('prev-desc-html').srcdoc =
+                '<body style="font-family:sans-serif;font-size:14px;color:#222">' + (job.resultado_ia.descricao_html || '') + '</body>';
+              document.getElementById('preview-box').style.display = 'block';
+            }
+          }
+        });
+      }, 2000);
+    }
+
+    function carregarTendencias(lote) {
+      const termo = document.getElementById('ia-termo').value.trim();
+      if(!termo) { alert('Digite um termo ou nicho.'); return; }
+      loteAtualNum = lote;
+
+      const container = document.getElementById('lista-sugestoes-container');
+      container.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:20px;">DropAI buscando produto(s)...</p>';
+      document.getElementById('btn-mais-lotes').style.display = 'none';
+
+      api('/api/sugerir', {nicho: termo, lote: lote}).then(res => {
+        if(res.body.erro) {
+          container.innerHTML = '<p style="text-align:center; color:var(--danger);">' + esc(res.body.erro) + '</p>';
+          return;
+        }
+        renderizarProdutosPrateleira(res.body.produtos);
+        document.getElementById('btn-mais-lotes').style.display = 'block';
+      });
+    }
+
+    function carregarMaisLotes() {
+      loteAtualNum++;
+      carregarTendencias(loteAtualNum);
+    }
+
+    function renderizarProdutosPrateleira(produtos) {
+      const container = document.getElementById('lista-sugestoes-container');
+      container.innerHTML = '';
+      produtos.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'sugestao-card';
+        card.innerHTML = `
+          <div class="sugestao-titulo">${esc(p.nome)}</div>
+          <div class="sugestao-desc">${esc(p.descricao_resumida)}</div>
+          <div style="font-size:0.75rem; color:var(--warning);">💡 ${esc(p.motivo_tendencia)}</div>
+          <div class="sugestao-footer">
+            <span class="sugestao-preco">Custo Est.: R$ ${esc(p.custo_estimado)}</span>
+            <button class="btn-cadastrar-sugestao">Importar Produto</button>
+          </div>
+        `;
+        card.querySelector('button').addEventListener('click', () => importarSugestao(p.nome, p.descricao_resumida, p.custo_estimado));
+        container.appendChild(card);
+      });
+    }
+
+    function importarSugestao(nome, desc, custo) {
+      mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
+      document.getElementById('nome').value = nome;
+      document.getElementById('descricao').value = desc;
+      document.getElementById('custo').value = custo;
+      calcularVenda();
+      window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+  </script>
+</body>
+</html>
