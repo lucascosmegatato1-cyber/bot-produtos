@@ -396,11 +396,6 @@ def saude():
     return "ok"
 
 
-@app.route("/")
-def inicio():
-    return Response("DropAI Backend Rodando Perfeitamente", mimetype="text/html")
-
-
 @app.route("/icone.png")
 def icone_arquivo():
     if os.path.exists("icone.png"):
@@ -560,6 +555,204 @@ def status(job_id):
     if not job:
         return jsonify(erro="Tarefa não encontrada"), 404
     return jsonify(job)
+
+
+# ---------- PWA & Interface Web ----------
+PAGINA = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DropAI - Automação Multiplataforma</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+    <div id="app" class="flex-1 flex flex-col max-w-md mx-auto w-full p-4">
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+            <h1 class="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">DropAI Premium</h1>
+            <span id="user-badge" class="text-xs bg-indigo-900/50 text-indigo-300 px-2.5 py-1 rounded-full border border-indigo-700/50 hidden">VIP</span>
+        </header>
+
+        <!-- Telas -->
+        <div id="view-auth" class="space-y-4">
+            <div class="text-center mb-6">
+                <h2 class="text-2xl font-semibold">Bem-vindo de volta</h2>
+                <p class="text-sm text-slate-400">Entre com sua conta para automatizar sua loja</p>
+            </div>
+            <input type="email" id="auth-email" placeholder="E-mail" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+            <input type="password" id="auth-senha" placeholder="Senha" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+            <button onclick="fazerLogin()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3 rounded-lg transition">Entrar</button>
+            <button onclick="fazerRegistro()" class="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium py-3 rounded-lg transition">Criar Conta</button>
+            <p id="auth-erro" class="text-red-400 text-xs text-center mt-2"></p>
+        </div>
+
+        <div id="view-main" class="space-y-6 hidden flex-1 flex flex-col">
+            <div class="grid grid-cols-2 gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800 text-sm">
+                <button onclick="mudarAba('produto')" id="tab-produto" class="py-2 rounded-md bg-indigo-600 font-medium transition">Novo Produto</button>
+                <button onclick="mudarAba('config')" id="tab-config" class="py-2 rounded-md text-slate-400 font-medium transition">Configurações</button>
+            </div>
+
+            <!-- Aba Produto -->
+            <div id="section-produto" class="space-y-4 flex-1 flex flex-col">
+                <input type="text" id="prod-nome" placeholder="Nome ou Link do Produto" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                <textarea id="prod-desc" placeholder="Descrição original (opcional)" rows="3" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500"></textarea>
+                <div class="grid grid-cols-2 gap-2">
+                    <input type="number" step="0.01" id="prod-custo" placeholder="Preço de Custo (R$)" class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                    <input type="text" id="prod-sku" placeholder="SKU Personalizado" class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <button onclick="enviarProduto()" class="w-full bg-gradient-to-r from-indigo-600 to-cyan-600 hover:opacity-90 text-white font-medium py-3 rounded-lg transition shadow-lg shadow-indigo-500/20">Cadastrar com IA</button>
+                
+                <div id="status-container" class="space-y-2 hidden mt-4 bg-slate-900/50 border border-slate-800 p-4 rounded-lg flex-1">
+                    <p id="status-texto" class="text-xs font-mono text-cyan-400">Processando...</p>
+                    <div id="log-box" class="h-32 overflow-y-auto text-xs font-mono text-slate-400 space-y-1 bg-slate-950 p-2 rounded border border-slate-900"></div>
+                </div>
+            </div>
+
+            <!-- Aba Configurações -->
+            <div id="section-config" class="space-y-4 hidden">
+                <select id="cfg-plataforma" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                    <option value="yampi">Yampi</option>
+                    <option value="shopify">Shopify</option>
+                    <option value="nuvemshop">Nuvemshop</option>
+                </select>
+                <input type="text" id="cfg-url" placeholder="URL da Loja / Alias (ex: minha-loja ou loja.com)" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                <input type="text" id="cfg-token" placeholder="Token de Acesso / API Token" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                <input type="text" id="cfg-secret" placeholder="Secret Key (Apenas Yampi)" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-sm focus:outline-none focus:border-indigo-500">
+                <button onclick="salvarConfig()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 rounded-lg transition">Salvar Configurações</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let usuarioAtual = null;
+
+        function mostrarErro(msg) {
+            document.getElementById('auth-erro').innerText = msg;
+        }
+
+        async function fazerLogin() {
+            let email = document.getElementById('auth-email').value;
+            let senha = document.getElementById('auth-senha').value;
+            let r = await fetch('/api/auth/login', {method: 'POST', body: JSON.stringify({email, senha})});
+            let d = await r.json();
+            if(d.sucesso) {
+                usuarioAtual = d.user;
+                entrarApp();
+            } else {
+                mostrarErro(d.erro);
+            }
+        }
+
+        async function fazerRegistro() {
+            let email = document.getElementById('auth-email').value;
+            let senha = document.getElementById('auth-senha').value;
+            let r = await fetch('/api/auth/registrar', {method: 'POST', body: JSON.stringify({email, senha})});
+            let d = await r.json();
+            if(d.sucesso) {
+                fazerLogin();
+            } else {
+                mostrarErro(d.erro);
+            }
+        }
+
+        function entrarApp() {
+            document.getElementById('view-auth').classList.add('hidden');
+            document.getElementById('view-main').classList.remove('hidden');
+            if(usuarioAtual.eh_vip) {
+                document.getElementById('user-badge').classList.remove('hidden');
+            }
+            document.getElementById('cfg-plataforma').value = usuarioAtual.plataforma || 'yampi';
+            document.getElementById('cfg-url').value = usuarioAtual.loja_url || '';
+            document.getElementById('cfg-token').value = usuarioAtual.api_token || '';
+            document.getElementById('cfg-secret').value = usuarioAtual.api_secret || '';
+        }
+
+        function mudarAba(aba) {
+            if(aba === 'produto') {
+                document.getElementById('section-produto').classList.remove('hidden');
+                document.getElementById('section-config').classList.add('hidden');
+                document.getElementById('tab-produto').className = 'py-2 rounded-md bg-indigo-600 font-medium transition';
+                document.getElementById('tab-config').className = 'py-2 rounded-md text-slate-400 font-medium transition';
+            } else {
+                document.getElementById('section-produto').classList.add('hidden');
+                document.getElementById('section-config').classList.remove('hidden');
+                document.getElementById('tab-config').className = 'py-2 rounded-md bg-indigo-600 font-medium transition';
+                document.getElementById('tab-produto').className = 'py-2 rounded-md text-slate-400 font-medium transition';
+            }
+        }
+
+        async function salvarConfig() {
+            let dados = {
+                email: usuarioAtual.email,
+                plataforma: document.getElementById('cfg-plataforma').value,
+                loja_url: document.getElementById('cfg-url').value,
+                api_token: document.getElementById('cfg-token').value,
+                api_secret: document.getElementById('cfg-secret').value
+            };
+            let r = await fetch('/api/auth/salvar-config', {method: 'POST', body: JSON.stringify(dados)});
+            let d = await r.json();
+            if(d.sucesso) {
+                usuarioAtual.plataforma = dados.plataforma;
+                usuarioAtual.loja_url = dados.loja_url;
+                usuarioAtual.api_token = dados.api_token;
+                usuarioAtual.api_secret = dados.api_secret;
+                alert('Configurações salvas com sucesso!');
+            }
+        }
+
+        async function enviarProduto() {
+            let dados = {
+                nome: document.getElementById('prod-nome').value,
+                descricao: document.getElementById('prod-desc').value,
+                custo: document.getElementById('prod-custo').value,
+                sku: document.getElementById('prod-sku').value,
+                plataforma: usuarioAtual.plataforma,
+                loja_url: usuarioAtual.loja_url,
+                api_token: usuarioAtual.api_token,
+                api_secret: usuarioAtual.api_secret,
+                eh_vip: usuarioAtual.eh_vip
+            };
+
+            let r = await fetch('/api/produtos', {method: 'POST', body: JSON.stringify(dados)});
+            let d = await r.json();
+            if(d.erro) {
+                alert(d.erro);
+                return;
+            }
+
+            document.getElementById('status-container').classList.remove('hidden');
+            acompanharJob(d.id);
+        }
+
+        async function acompanharJob(jobId) {
+            let intervalo = setInterval(async () => {
+                let r = await fetch(`/api/status/${jobId}`);
+                let j = await r.json();
+                
+                let logBox = document.getElementById('log-box');
+                logBox.innerHTML = j.log.map(l => `<div>> ${l}</div>`).join('');
+                logBox.scrollTop = logBox.scrollHeight;
+
+                if(j.status === 'ok') {
+                    document.getElementById('status-texto').innerText = 'Status: Concluído com Sucesso! ✅';
+                    document.getElementById('status-texto').className = 'text-xs font-mono text-emerald-400';
+                    clearInterval(intervalo);
+                } else if(j.status === 'erro') {
+                    document.getElementById('status-texto').innerText = 'Status: Erro no Processamento ❌';
+                    document.getElementById('status-texto').className = 'text-xs font-mono text-red-400';
+                    clearInterval(intervalo);
+                }
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def inicio():
+    return Response(PAGINA, mimetype="text/html")
 
 
 if __name__ == "__main__":
