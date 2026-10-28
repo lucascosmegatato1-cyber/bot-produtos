@@ -18,8 +18,8 @@ app.secret_key = os.environ.get("FLASK_SECRET", "dropai-secret-key-super-segura-
 # ---------- CONTAS VIP COM PRIORIDADE MÁXIMA ----------
 EMAILS_VIP = [
     "lojashopee995@gmail.com",  # Sua conta principal (Prioridade 1)
-    "email_do_seu_pai@gmail.com",     # Aguardando e-mail do seu pai
-    "email_do_seu_irmao@gmail.com"   # Aguardando e-mail do seu irmão
+    "email_do_seu_pai@gmail.com",     # Pai
+    "email_do_seu_irmao@gmail.com"   # Irmão
 ]
 
 # Chave centralizada da IA no Render
@@ -32,11 +32,10 @@ CERCA = chr(96) * 3
 JOBS = {}
 MODELOS = []
 
-# Trava para dar prioridade VIP ao processar requisições
 LOCK_PROCESSAMENTO = threading.Lock()
 
 
-# ---------- Base de Dados SQLite ----------
+# ---------- Base de Dados SQLite Atualizada ----------
 def init_db():
     conn = sqlite3.connect("dropai.db")
     cursor = conn.cursor()
@@ -46,9 +45,10 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
             eh_vip INTEGER DEFAULT 0,
-            yampi_alias TEXT,
-            yampi_token TEXT,
-            yampi_secret TEXT
+             plataforma TEXT DEFAULT 'yampi',
+            loja_url TEXT,
+            api_token TEXT,
+            api_secret TEXT
         )
     """)
     conn.commit()
@@ -187,28 +187,24 @@ Responda EXCLUSIVAMENTE em formato JSON contendo uma lista chamada "produtos" co
         return None
 
 
-# ---------- Yampi ----------
-def obter_ou_criar_marca(alias, user_token, secret_key, registrar):
+# ---------- Integrações Multiplataforma ----------
+
+def cadastrar_yampi(alias, user_token, secret_key, titulo, descricao_html, custo, venda, sku, registrar):
     base_yampi = f"https://api.dooki.com.br/v2/{alias}/catalog"
     headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
     
+    # Obter ou criar marca
     r = requests.get(base_yampi + "/brands", headers=headers, params={"name": NOME_MARCA}, timeout=60)
+    brand_id = None
     if r.status_code == 200:
         for m in r.json().get("data", []):
             if m.get("name", "").strip().lower() == NOME_MARCA.lower():
-                return m["id"]
-    r = requests.post(base_yampi + "/brands", headers=headers,
-                      json={"name": NOME_MARCA, "active": True, "featured": False}, timeout=60)
-    if r.status_code in (200, 201):
-        return r.json()["data"]["id"]
-    registrar("Erro ao criar marca na Yampi (" + str(r.status_code) + "): " + r.text[:200])
-    return None
+                brand_id = m["id"]
+    if not brand_id:
+        r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": NOME_MARCA, "active": True}, timeout=60)
+        if r_brand.status_code in (200, 201):
+            brand_id = r_brand.json()["data"]["id"]
 
-
-def cadastrar(alias, user_token, secret_key, titulo, descricao_html, custo, venda, sku, brand_id, registrar):
-    base_yampi = f"https://api.dooki.com.br/v2/{alias}/catalog"
-    headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
-    
     corpo = {
         "simple": True,
         "brand_id": brand_id,
@@ -230,7 +226,59 @@ def cadastrar(alias, user_token, secret_key, titulo, descricao_html, custo, vend
     return False
 
 
-# ---------- Processo Background com Fila VIP ----------
+def cadastrar_shopify(loja_url, access_token, titulo, descricao_html, custo, venda, sku, registrar):
+    # Limpa URL da loja Shopify (ex: minhaloja.myshopify.com)
+    loja_url = loja_url.replace("https://", "").replace("http://", "").strip("/")
+    url = f"https://{loja_url}/admin/api/2024-01/products.json"
+    headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+    
+    corpo = {
+        "product": {
+            "title": titulo,
+            "body_html": descricao_html,
+            "vendor": NOME_MARCA,
+            "status": "active" if PUBLICAR_DIRETO else "draft",
+            "variants": [{
+                "sku": sku,
+                "price": f"{venda:.2f}",
+                "compare_at_price": f"{(venda * 1.2):.2f}",
+                "cost_price": f"{custo:.2f}"
+            }]
+        }
+    }
+    r = requests.post(url, headers=headers, json=corpo, timeout=60)
+    if r.status_code in (200, 201):
+        return True
+    registrar("Erro na Shopify (" + str(r.status_code) + "): " + r.text[:300])
+    return False
+
+
+def cadastrar_nuvemshop(store_id, access_token, titulo, descricao_html, custo, venda, sku, registrar):
+    url = f"https://api.nuvemshop.com.br/v1/{store_id}/products"
+    headers = {
+        "Authentication": f"bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "DropAI (suporte@dropai.com)"
+    }
+    
+    corpo = {
+        "name": {"pt": titulo},
+        "description": {"pt": descricao_html},
+        "published": PUBLICAR_DIRETO,
+        "variants": [{
+            "sku": sku,
+            "price": f"{venda:.2f}",
+            "cost": f"{custo:.2f}"
+        }]
+    }
+    r = requests.post(url, headers=headers, json=corpo, timeout=60)
+    if r.status_code in (200, 201):
+        return True
+    registrar("Erro na Nuvemshop (" + str(r.status_code) + "): " + r.text[:300])
+    return False
+
+
+# ---------- Processo Background ----------
 def processar(job_id, d):
     job = JOBS[job_id]
 
@@ -248,15 +296,16 @@ def processar(job_id, d):
                 reg("Erro crítico: Chave da IA centralizada não configurada no Render.")
                 return
 
-            if not d["alias"] or not d["token"] or not d["secret"]:
+            plataforma = d.get("plataforma", "yampi")
+            if not d.get("loja_url") or not d.get("api_token"):
                 job["status"] = "erro"
-                reg("Erro: Credenciais da Yampi não informadas. Vá em Configurações.")
+                reg("Erro: Credenciais da loja não configuradas. Vá em Configurações.")
                 return
 
             if d.get("eh_vip"):
                 reg("👑 Processamento Prioritário VIP Ativado!")
 
-            reg("DropAI analisando dados e sintetizando nome...")
+            reg(f"DropAI analisando e sintetizando nome para {plataforma.upper()}...")
             analise = analisar(d["nome"], d["descricao"], d["custo"], reg)
             if analise is None:
                 job["status"] = "erro"
@@ -264,21 +313,22 @@ def processar(job_id, d):
                 return
 
             job["resultado_ia"] = analise
-
             reg("Novo Título Criado: " + str(analise.get("titulo")))
-            reg("Cadastrando na Yampi com multiplicador 2x...")
-            brand_id = obter_ou_criar_marca(d["alias"], d["token"], d["secret"], reg)
-            if brand_id is None:
-                job["status"] = "erro"
-                return
+            reg(f"Cadastrando na {plataforma.upper()} com multiplicador 2x...")
 
             venda = d["custo"] * 2.0
-            ok = cadastrar(d["alias"], d["token"], d["secret"], analise["titulo"], analise["descricao_html"], d["custo"],
-                           venda, d["sku"], brand_id, reg)
+            ok = False
+
+            if plataforma == "yampi":
+                ok = cadastrar_yampi(d["loja_url"], d["api_token"], d["api_secret"], analise["titulo"], analise["descricao_html"], d["custo"], venda, d["sku"], reg)
+            elif plataforma == "shopify":
+                ok = cadastrar_shopify(d["loja_url"], d["api_token"], analise["titulo"], analise["descricao_html"], d["custo"], venda, d["sku"], reg)
+            elif plataforma == "nuvemshop":
+                ok = cadastrar_nuvemshop(d["loja_url"], d["api_token"], analise["titulo"], analise["descricao_html"], d["custo"], venda, d["sku"], reg)
+
             if ok:
                 job["status"] = "ok"
-                estado = "ATIVO" if PUBLICAR_DIRETO else "INATIVO (revise no painel)"
-                reg(f"Sucesso! Cadastrado como {estado}. Preço de Venda (2x): R$ {venda:.2f}")
+                reg(f"Sucesso! Produto cadastrado. Preço de Venda (2x): R$ {venda:.2f}")
             else:
                 job["status"] = "erro"
         except Exception as erro:
@@ -286,7 +336,7 @@ def processar(job_id, d):
             reg("Erro inesperado: " + str(erro))
 
 
-# ---------- API Routes ----------
+# ---------- Rotas API ----------
 @app.route("/saude")
 def saude():
     return "ok"
@@ -327,32 +377,42 @@ def login_usuario():
 
     conn = db_conectar()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, yampi_alias, yampi_token, yampi_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
+    cursor.execute("SELECT id, plataforma, loja_url, api_token, api_secret, eh_vip FROM usuarios WHERE email = ? AND senha = ?", (email, senha))
     user = cursor.fetchone()
     conn.close()
 
     if not user:
         return jsonify(erro="E-mail ou senha incorretos"), 401
 
-    is_vip = 1 if email in [e.lower() for e in EMAILS_VIP] else (user[4] or 0)
+    is_vip = 1 if email in [e.lower() for e in EMAILS_VIP] else (user[5] or 0)
 
-    return jsonify(sucesso=True, user={"id": user[0], "email": email, "alias": user[1] or "", "token": user[2] or "", "secret": user[3] or "", "eh_vip": bool(is_vip)})
+    return jsonify(sucesso=True, user={
+        "id": user[0], 
+        "email": email, 
+        "plataforma": user[1] or "yampi",
+        "loja_url": user[2] or "", 
+        "api_token": user[3] or "", 
+        "api_secret": user[4] or "", 
+        "eh_vip": bool(is_vip)
+    })
 
 
 @app.route("/api/auth/salvar-config", methods=["POST"])
 def salvar_config():
     d = request.get_json(force=True, silent=True) or {}
     email = str(d.get("email", "")).strip().lower()
-    alias = str(d.get("alias", "")).strip()
-    token = str(d.get("token", "")).strip()
-    secret = str(d.get("secret", "")).strip()
+    plataforma = str(d.get("plataforma", "yampi")).strip()
+    loja_url = str(d.get("loja_url", "")).strip()
+    api_token = str(d.get("api_token", "")).strip()
+    api_secret = str(d.get("api_secret", "")).strip()
 
     if not email:
         return jsonify(erro="Utilizador não identificado"), 400
 
     conn = db_conectar()
     cursor = conn.cursor()
-    cursor.execute("UPDATE usuarios SET yampi_alias = ?, yampi_token = ?, yampi_secret = ? WHERE email = ?", (alias, token, secret, email))
+    cursor.execute("UPDATE usuarios SET plataforma = ?, loja_url = ?, api_token = ?, api_secret = ? WHERE email = ?", 
+                   (plataforma, loja_url, api_token, api_secret, email))
     conn.commit()
     conn.close()
     return jsonify(sucesso=True)
@@ -382,9 +442,10 @@ def novo():
         "descricao": descricao,
         "custo": custo,
         "sku": sku,
-        "alias": str(d.get("alias", "")).strip(),
-        "token": str(d.get("token", "")).strip(),
-        "secret": str(d.get("secret", "")).strip(),
+        "plataforma": str(d.get("plataforma", "yampi")).strip(),
+        "loja_url": str(d.get("loja_url", "")).strip(),
+        "api_token": str(d.get("api_token", "")).strip(),
+        "api_secret": str(d.get("api_secret", "")).strip(),
         "eh_vip": bool(d.get("eh_vip"))
     }
     
@@ -422,7 +483,7 @@ def status(job_id):
 @app.route("/manifest.json")
 def manifesto():
     dados = {
-        "name": "DropAI - Automação Yampi",
+        "name": "DropAI - Automação Multiplataforma",
         "short_name": "DropAI",
         "start_url": "/",
         "display": "standalone",
@@ -479,7 +540,7 @@ PAGINA = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>DropAI - Automação Inteligente Yampi</title>
+  <title>DropAI - Multiplataforma Inteligente</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#00A3FF">
   <link rel="apple-touch-icon" href="/icone-192.png">
@@ -641,7 +702,7 @@ PAGINA = r"""<!doctype html>
       margin-bottom: 6px;
     }
 
-    input, textarea {
+    input, select, textarea {
       width: 100%;
       background-color: var(--input-bg);
       border: 1px solid var(--border);
@@ -652,7 +713,7 @@ PAGINA = r"""<!doctype html>
       transition: all 0.2s ease;
     }
 
-    input:focus, textarea:focus {
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--primary);
       box-shadow: 0 0 10px rgba(0, 163, 255, 0.2);
@@ -797,7 +858,7 @@ PAGINA = r"""<!doctype html>
     <div id="auth-screen">
       <div class="auth-logo">
         <h1>♚ DropAI</h1>
-        <p>Automação Inteligente Yampi</p>
+        <p>Automação Multiplataforma</p>
       </div>
       <div class="card">
         <div class="form-group">
@@ -836,28 +897,40 @@ PAGINA = r"""<!doctype html>
       <div class="tabs">
         <button class="tab-btn active" onclick="mudarAba('manual', this)">Importar</button>
         <button class="tab-btn" onclick="mudarAba('ia', this)">✨ Prateleira</button>
-        <button class="tab-btn" onclick="mudarAba('config', this)">⚙️ Yampi</button>
+        <button class="tab-btn" onclick="mudarAba('config', this)">⚙️ Loja</button>
       </div>
 
-      <!-- ABA CONFIGURAÇÕES YAMPI -->
+      <!-- ABA CONFIGURAÇÕES DA LOJA / PLATAFORMA -->
       <div id="aba-config" class="tab-content">
         <div class="card">
-          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">⚙️ Credenciais da Sua Loja</h3>
-          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Informe os dados da sua Yampi para cadastrar produtos automaticamente no seu catálogo.</p>
+          <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">⚙️ Configuração da Plataforma</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Selecione onde a sua loja opera e insira as credenciais de acesso.</p>
           
           <div class="form-group">
-            <label for="cfg-alias">Yampi Alias (Nome da Loja)</label>
-            <input type="text" id="cfg-alias" placeholder="ex: minhaloja">
+            <label for="cfg-plataforma">Plataforma de E-commerce</label>
+            <select id="cfg-plataforma" onchange="atualizarLabelsConfig()">
+              <option value="yampi">Yampi</option>
+              <option value="shopify">Shopify</option>
+              <option value="nuvemshop">Nuvemshop</option>
+            </select>
           </div>
+
           <div class="form-group">
-            <label for="cfg-token">Yampi User-Token</label>
-            <input type="password" id="cfg-token" placeholder="Cole seu User-Token...">
+            <label id="lbl-url" for="cfg-url">Yampi Alias (Nome da Loja)</label>
+            <input type="text" id="cfg-url" placeholder="ex: minhaloja">
           </div>
+          
           <div class="form-group">
-            <label for="cfg-secret">Yampi User-Secret-Key</label>
-            <input type="password" id="cfg-secret" placeholder="Cole sua User-Secret-Key...">
+            <label id="lbl-token" for="cfg-token">Yampi User-Token</label>
+            <input type="password" id="cfg-token" placeholder="Cole seu token...">
           </div>
-          <button type="button" class="btn-submit" onclick="salvarConfigYampi()">💾 Salvar Dados da Yampi</button>
+
+          <div class="form-group" id="group-secret">
+            <label id="lbl-secret" for="cfg-secret">Yampi User-Secret-Key</label>
+            <input type="password" id="cfg-secret" placeholder="Cole sua secret key...">
+          </div>
+
+          <button type="button" class="btn-submit" onclick="salvarConfigLoja()">💾 Salvar Configurações</button>
         </div>
       </div>
 
@@ -893,7 +966,7 @@ PAGINA = r"""<!doctype html>
 
             <button type="button" id="enviar" class="btn-submit">
               <div class="spinner" id="spinner"></div>
-              <span id="btn-text">Processar & Cadastrar na Yampi (2x)</span>
+              <span id="btn-text">Processar & Cadastrar na Loja (2x)</span>
             </button>
           </form>
         </div>
@@ -947,6 +1020,31 @@ PAGINA = r"""<!doctype html>
       }
     };
 
+    function atualizarLabelsConfig() {
+      const plat = $("cfg-plataforma").value;
+      if (plat === "yampi") {
+        $("lbl-url").textContent = "Yampi Alias (Nome da Loja)";
+        $("cfg-url").placeholder = "ex: minhaloja";
+        $("lbl-token").textContent = "Yampi User-Token";
+        $("cfg-token").placeholder = "Cole seu User-Token...";
+        $("group-secret").style.display = "block";
+        $("lbl-secret").textContent = "Yampi User-Secret-Key";
+        $("cfg-secret").placeholder = "Cole sua User-Secret-Key...";
+      } else if (plat === "shopify") {
+        $("lbl-url").textContent = "URL da Loja Shopify";
+        $("cfg-url").placeholder = "ex: minhaloja.myshopify.com";
+        $("lbl-token").textContent = "Admin API Access Token";
+        $("cfg-token").placeholder = "shpat_xxxxxxxx...";
+        $("group-secret").style.display = "none";
+      } else if (plat === "nuvemshop") {
+        $("lbl-url").textContent = "ID da Loja Nuvemshop";
+        $("cfg-url").placeholder = "ex: 1234567";
+        $("lbl-token").textContent = "Access Token (Bearer)";
+        $("cfg-token").placeholder = "Cole o token da Nuvemshop...";
+        $("group-secret").style.display = "none";
+      }
+    }
+
     async function fazerLogin() {
       const email = $("auth-email").value.trim();
       const senha = $("auth-senha").value.trim();
@@ -991,13 +1089,15 @@ PAGINA = r"""<!doctype html>
       $("auth-screen").style.display = "none";
       $("app-screen").style.display = "flex";
       $("user-email-display").textContent = user.email;
-      $("cfg-alias").value = user.alias || "";
-      $("cfg-token").value = user.token || "";
-      $("cfg-secret").value = user.secret || "";
+      $("cfg-plataforma").value = user.plataforma || "yampi";
+      $("cfg-url").value = user.loja_url || "";
+      $("cfg-token").value = user.api_token || "";
+      $("cfg-secret").value = user.api_secret || "";
+      atualizarLabelsConfig();
       if (user.eh_vip) {
         $("badge-status-vip").style.display = "inline-block";
       }
-      if (user.alias) { $("status-conexao").textContent = "● " + user.alias; }
+      if (user.loja_url) { $("status-conexao").textContent = "● " + user.plataforma.toUpperCase(); }
     }
 
     function fazerLogout() {
@@ -1006,24 +1106,25 @@ PAGINA = r"""<!doctype html>
       $("auth-screen").style.display = "flex";
     }
 
-    async function salvarConfigYampi() {
+    async function salvarConfigLoja() {
       const user = JSON.parse(localStorage.getItem("dropai_user") || "{}");
-      user.alias = $("cfg-alias").value.trim();
-      user.token = $("cfg-token").value.trim();
-      user.secret = $("cfg-secret").value.trim();
+      user.plataforma = $("cfg-plataforma").value;
+      user.loja_url = $("cfg-url").value.trim();
+      user.api_token = $("cfg-token").value.trim();
+      user.api_secret = $("cfg-secret").value.trim();
 
       try {
         const r = await fetch("/api/auth/salvar-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: user.email, alias: user.alias, token: user.token, secret: user.secret })
+          body: JSON.stringify({ email: user.email, plataforma: user.plataforma, loja_url: user.loja_url, api_token: user.api_token, api_secret: user.api_secret })
         });
         const d = await r.json();
         if (!r.ok) { alert(d.erro || "Erro ao salvar."); return; }
 
         localStorage.setItem("dropai_user", JSON.stringify(user));
-        $("status-conexao").textContent = "● " + (user.alias || "Conectado");
-        alert("Dados da Yampi salvos com sucesso!");
+        $("status-conexao").textContent = "● " + user.plataforma.toUpperCase();
+        alert("Configurações da loja salvas com sucesso!");
         mudarAba('manual', document.querySelectorAll('.tab-btn')[0]);
       } catch (e) {
         alert("Erro ao comunicar com o servidor.");
@@ -1129,8 +1230,8 @@ PAGINA = r"""<!doctype html>
         alert("Por favor, preencha o nome/link do produto e o preço de custo.");
         return;
       }
-      if (!user.alias || !user.token) {
-        alert("Configure os seus dados da Yampi na aba ⚙️ Yampi antes de cadastrar.");
+      if (!user.loja_url || !user.api_token) {
+        alert("Configure os seus dados de acesso na aba ⚙️ Loja antes de cadastrar.");
         mudarAba('config', document.querySelectorAll('.tab-btn')[2]);
         return;
       }
@@ -1140,9 +1241,10 @@ PAGINA = r"""<!doctype html>
         descricao: $("descricao").value.trim(),
         custo: custo,
         sku: $("sku").value.trim(),
-        alias: user.alias,
-        token: user.token,
-        secret: user.secret,
+        plataforma: user.plataforma || "yampi",
+        loja_url: user.loja_url,
+        api_token: user.api_token,
+        api_secret: user.api_secret,
         eh_vip: user.eh_vip
       };
 
@@ -1151,7 +1253,7 @@ PAGINA = r"""<!doctype html>
       $("btn-text").textContent = "DropAI processando...";
 
       $("status-card").style.display = "block";
-      $("status-title").textContent = "Sintetizando e enviando para a Yampi...";
+      $("status-title").textContent = "Sintetizando e enviando para a loja...";
       $("status-badge").textContent = "⏳ RODANDO";
       $("status-badge").style.color = "var(--warning)";
       $("log-box").textContent = "DropAI gerando título exclusivo e aplicando multiplicador 2x...";
@@ -1227,7 +1329,7 @@ PAGINA = r"""<!doctype html>
     function resetBotao() {
       $("enviar").disabled = false;
       $("spinner").style.display = "none";
-      $("btn-text").textContent = "Processar & Cadastrar na Yampi (2x)";
+      $("btn-text").textContent = "Processar & Cadastrar na Loja (2x)";
     }
 
     if ("serviceWorker" in navigator) {
