@@ -186,8 +186,16 @@ def listar_modelos():
     return lista[:1]
 
 
+MODELO_OK = None  # último modelo que respondeu: é tentado primeiro nas próximas chamadas
+
+
 def chamar_ia(corpo, registrar, timeout_val=120):
-    for modelo in listar_modelos():
+    global MODELO_OK
+    modelos = list(listar_modelos())
+    if MODELO_OK in modelos:
+        modelos.remove(MODELO_OK)
+        modelos.insert(0, MODELO_OK)
+    for modelo in modelos:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
         headers = {"x-goog-api-key": CHAVE_GOOGLE, "Content-Type": "application/json"}
         for tentativa in (1, 2):
@@ -198,6 +206,7 @@ def chamar_ia(corpo, registrar, timeout_val=120):
                 r = None
             if r is not None:
                 if r.status_code == 200:
+                    MODELO_OK = modelo
                     return r.json()
                 
                 err_msg = motivo(r)
@@ -209,6 +218,8 @@ def chamar_ia(corpo, registrar, timeout_val=120):
 
                 if r.status_code in (401, 403):
                     return None
+                if r.status_code == 404 and modelo in MODELOS:
+                    MODELOS.remove(modelo)  # modelo que não existe mais: não tenta de novo
                 if r.status_code in (400, 404):
                     break
             if tentativa == 1:
@@ -545,9 +556,12 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
     }
     r = requests.post(base_yampi + "/products", headers=headers, json=corpo, timeout=120)
     if r.status_code not in (200, 201):
-        registrar("Erro na Yampi (" + str(r.status_code) + "): " + r.text[:300])
+        if r.status_code == 422 and ("slug" in r.text or '"name"' in r.text):
+            registrar("⚠️ Já existe um produto com este nome na sua loja Yampi (talvez de uma importação anterior, em rascunho). "
+                      "Apague ou renomeie o antigo na Yampi e importe de novo.")
+        else:
+            registrar("Erro na Yampi (" + str(r.status_code) + "): " + r.text[:300])
         return False
-
     try:
         produto_id, sku_id = _extrair_ids(r.json())
     except Exception:
