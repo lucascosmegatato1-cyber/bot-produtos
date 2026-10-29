@@ -134,6 +134,28 @@ def init_db():
             destino TEXT
         )
     """)
+
+    # Catálogo próprio de produtos de cada usuário
+    db_run("""
+        CREATE TABLE IF NOT EXISTS meus_produtos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario_email TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'fisico',
+            nome TEXT NOT NULL,
+            descricao TEXT DEFAULT '',
+            custo REAL NOT NULL DEFAULT 0,
+            preco_venda REAL NOT NULL DEFAULT 0,
+            link_origem TEXT DEFAULT '',
+            imagem_url TEXT DEFAULT '',
+            criado REAL NOT NULL
+        )
+    """)
+
+    db_run("""
+        CREATE INDEX IF NOT EXISTS idx_meus_produtos_usuario
+        ON meus_produtos (usuario_email)
+    """)
+
     # Bancos criados em versões anteriores: acrescenta as colunas novas (ignora se já existirem)
     for alter in ("ALTER TABLE usuarios ADD COLUMN telefone TEXT",
                   "ALTER TABLE usuarios ADD COLUMN telefone_verificado INTEGER DEFAULT 0",
