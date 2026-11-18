@@ -32,10 +32,9 @@ app.secret_key = os.environ.get("FLASK_SECRET") or secrets.token_urlsafe(48)
 if not os.environ.get("FLASK_SECRET"):
     print("AVISO: FLASK_SECRET nao definido. Usando chave temporaria.")
 
+# Única conta com prioridade máxima (VIP). Para liberar outra no futuro, acrescente o e-mail aqui.
 EMAILS_VIP = [
     "lojashopee995@gmail.com",
-    "email_do_seu_pai@gmail.com",
-    "email_do_seu_irmao@gmail.com"
 ]
 
 CHAVE_GOOGLE = os.environ.get("CHAVE_GOOGLE", "")
@@ -45,8 +44,8 @@ PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
 ESTOQUE_PADRAO = int(os.environ.get("ESTOQUE_PADRAO", "50"))
 MAX_IMAGENS = 8
 
-TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
 
 CERCA = chr(96) * 3
 JOBS = {}
@@ -70,11 +69,83 @@ UA_NAVEGADOR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
-USA_TURSO = bool(TURSO_URL and TURSO_TOKEN and libsql_client)
+# Turso é usado sempre que URL e token existirem. Se a biblioteca libsql_client não estiver
+# instalada, o app fala com o Turso direto por HTTP (antes, nesse caso ele caía em silêncio
+# no SQLite local, que o Render apaga a cada reinício: era por isso que as contas sumiam).
+USA_TURSO = bool(TURSO_URL and TURSO_TOKEN)
+EM_PRODUCAO = bool(os.environ.get("RENDER"))  # o Render define esta variável automaticamente
+
+
+def descrever_banco():
+    if USA_TURSO:
+        return "Turso (nuvem) via " + ("biblioteca libsql_client" if libsql_client else "HTTP direto")
+    faltam = [nome for nome, valor in (("TURSO_DATABASE_URL", TURSO_URL), ("TURSO_AUTH_TOKEN", TURSO_TOKEN)) if not valor]
+    return "SQLite LOCAL (dropai.db). Variaveis ausentes no ambiente: " + ", ".join(faltam)
+
+
+print("BANCO DE DADOS EM USO:", descrever_banco())
+if EM_PRODUCAO and not USA_TURSO:
+    print("ATENCAO: rodando no Render SEM Turso. Contas e produtos serao APAGADOS a cada reinicio/deploy. "
+          "Defina TURSO_DATABASE_URL e TURSO_AUTH_TOKEN nas variaveis de ambiente do Render.")
+
+
+def _turso_http_base(url):
+    u = url.strip().rstrip("/")
+    for prefixo in ("libsql://", "wss://", "ws://"):
+        if u.startswith(prefixo):
+            u = "https://" + u[len(prefixo):]
+            break
+    if not u.startswith(("http://", "https://")):
+        u = "https://" + u
+    return u
+
+
+def _turso_arg(v):
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": str(int(v))}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+
+def _turso_valor(celula):
+    tipo = celula.get("type")
+    if tipo == "null":
+        return None
+    valor = celula.get("value")
+    if tipo == "integer":
+        return int(valor)
+    if tipo == "float":
+        return float(valor)
+    return valor
+
+
+def _turso_http(sql, params, fetch):
+    """Executa 1 comando no Turso pela API HTTP (/v2/pipeline), sem precisar de biblioteca extra."""
+    corpo = {"requests": [
+        {"type": "execute", "stmt": {"sql": sql, "args": [_turso_arg(p) for p in params]}},
+        {"type": "close"},
+    ]}
+    r = requests.post(_turso_http_base(TURSO_URL) + "/v2/pipeline", json=corpo,
+                      headers={"Authorization": "Bearer " + TURSO_TOKEN}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"Turso HTTP {r.status_code}: {r.text[:200]}")
+    resultado = r.json()["results"][0]
+    if resultado.get("type") == "error":
+        raise RuntimeError("Turso: " + str(resultado.get("error", {}).get("message", resultado)))
+    if not fetch:
+        return None
+    return [tuple(_turso_valor(c) for c in linha) for linha in resultado["response"]["result"]["rows"]]
 
 
 def db_run(sql, params=(), fetch=False):
     """Executa SQL no Turso (se configurado) ou no SQLite local. Sempre com parâmetros (sem injeção de SQL)."""
+    if USA_TURSO and libsql_client is None:
+        return _turso_http(sql, list(params), fetch)
     if USA_TURSO:
         client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
         try:
@@ -156,6 +227,26 @@ def init_db():
         ON meus_produtos (usuario_email)
     """)
 
+    # Conexões do lojista com suas lojas (yampi, shopify, nuvemshop).
+    # credentials_enc guarda os tokens JÁ CRIPTOGRAFADOS (nunca em texto puro).
+    db_run("""
+        CREATE TABLE IF NOT EXISTS store_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            store_id TEXT NOT NULL,
+            credentials_enc TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (user_id, platform, store_id)
+        )
+    """)
+
+    db_run("""
+        CREATE INDEX IF NOT EXISTS idx_store_conn_user
+        ON store_connections (user_id)
+    """)
+
     # Bancos criados em versões anteriores: acrescenta as colunas novas (ignora se já existirem)
     for alter in ("ALTER TABLE usuarios ADD COLUMN telefone TEXT",
                   "ALTER TABLE usuarios ADD COLUMN telefone_verificado INTEGER DEFAULT 0",
@@ -168,6 +259,11 @@ def init_db():
     for uid, senha in db_run("SELECT id, senha FROM usuarios", fetch=True) or []:
         if senha and not senha.startswith(PREFIXOS_HASH):
             db_run("UPDATE usuarios SET senha = ? WHERE id = ?", [gerar_hash(senha), uid])
+
+    # Limpeza única: se alguém se cadastrou com os e-mails de exemplo da lista antiga de VIP,
+    # essa conta perde o VIP. Só mexe nesses dois e-mails; pode apagar este bloco depois do 1º deploy.
+    for _email in ("email_do_seu_pai@gmail.com", "email_do_seu_irmao@gmail.com"):
+        db_run("UPDATE usuarios SET eh_vip = 0 WHERE email = ?", [_email])
 
 
 init_db()
@@ -894,7 +990,7 @@ def cooldown_ativo(chave):
 
 @app.route("/saude")
 def saude():
-    return "ok"
+    return "ok - banco: " + ("turso (permanente)" if USA_TURSO else "sqlite local (APAGA a cada reinicio no Render)")
 
 
 @app.route("/")
