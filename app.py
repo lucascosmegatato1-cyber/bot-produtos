@@ -20,11 +20,6 @@ from flask import Flask, request, jsonify, Response, send_file, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
-try:
-    import libsql_client
-except ImportError:
-    libsql_client = None
-
 app = Flask(__name__)
 # IMPORTANTE: defina FLASK_SECRET no Render (texto longo e aleatório). Sem ele, uma chave
 # temporária é gerada a cada reinício e todos os usuários precisam entrar de novo.
@@ -69,16 +64,17 @@ UA_NAVEGADOR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
-# Turso é usado sempre que URL e token existirem. Se a biblioteca libsql_client não estiver
-# instalada, o app fala com o Turso direto por HTTP (antes, nesse caso ele caía em silêncio
-# no SQLite local, que o Render apaga a cada reinício: era por isso que as contas sumiam).
+# Turso é usado sempre que URL e token existirem. O app fala com o Turso direto por HTTP,
+# sem biblioteca extra (a libsql_client é antiga e pode quebrar em versões novas do Python).
+# Antes, faltando qualquer peça ele caía em silêncio no SQLite local, que o Render apaga a
+# cada reinício: era por isso que as contas sumiam.
 USA_TURSO = bool(TURSO_URL and TURSO_TOKEN)
 EM_PRODUCAO = bool(os.environ.get("RENDER"))  # o Render define esta variável automaticamente
 
 
 def descrever_banco():
     if USA_TURSO:
-        return "Turso (nuvem) via " + ("biblioteca libsql_client" if libsql_client else "HTTP direto")
+        return "Turso (nuvem) via HTTP direto"
     faltam = [nome for nome, valor in (("TURSO_DATABASE_URL", TURSO_URL), ("TURSO_AUTH_TOKEN", TURSO_TOKEN)) if not valor]
     return "SQLite LOCAL (dropai.db). Variaveis ausentes no ambiente: " + ", ".join(faltam)
 
@@ -144,18 +140,8 @@ def _turso_http(sql, params, fetch):
 
 def db_run(sql, params=(), fetch=False):
     """Executa SQL no Turso (se configurado) ou no SQLite local. Sempre com parâmetros (sem injeção de SQL)."""
-    if USA_TURSO and libsql_client is None:
-        return _turso_http(sql, list(params), fetch)
     if USA_TURSO:
-        client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
-        try:
-            res = client.execute(sql, list(params))
-            return [tuple(r) for r in res.rows] if fetch else None
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
+        return _turso_http(sql, list(params), fetch)
     conn = sqlite3.connect("dropai.db")
     try:
         cur = conn.execute(sql, tuple(params))
@@ -266,7 +252,15 @@ def init_db():
         db_run("UPDATE usuarios SET eh_vip = 0 WHERE email = ?", [_email])
 
 
-init_db()
+try:
+    init_db()
+except Exception as _erro:
+    # Falha ao falar com o banco: avisa em português no log do Render e para o app
+    # (melhor parar do que gravar contas num banco que some a cada reinício).
+    print("ERRO AO INICIAR O BANCO DE DADOS (" + descrever_banco() + "): " + str(_erro))
+    if "401" in str(_erro) or "403" in str(_erro):
+        print("DICA: o Turso recusou o token. Gere um token novo e atualize TURSO_AUTH_TOKEN no Render.")
+    raise
 
 
 def motivo(resp):
