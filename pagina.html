@@ -529,7 +529,7 @@
                 <input type="text" id="custo" placeholder="0.00" required oninput="calcularVenda()">
               </div>
               <div class="calc-box">
-                <span>Preço de Venda (2x)</span>
+                <span>Preço de Venda (1,5x)</span>
                 <strong id="calc-venda">R$ 0,00</strong>
               </div>
             </div>
@@ -869,7 +869,7 @@
     function calcularVenda() {
       const custoStr = document.getElementById('custo').value.replace(',', '.');
       const custo = parseFloat(custoStr) || 0;
-      const venda = custo * 2.0;
+      const venda = custo * 1.5;
       document.getElementById('calc-venda').innerText = 'R$ ' + venda.toFixed(2).replace('.', ',');
     }
 
