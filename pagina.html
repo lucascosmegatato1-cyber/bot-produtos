@@ -279,6 +279,13 @@
       border: 1px solid rgba(255,255,255,0.03);
     }
 
+    .source-link-box {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+    .source-link-box a { color: var(--primary); text-decoration: underline; }
+
     .preview-box {
       margin-top: 12px;
       background: rgba(255,255,255,0.01);
@@ -481,15 +488,17 @@
       <div id="aba-config" class="tab-content">
         <div class="card">
           <h3 style="font-size: 1rem; margin-bottom: 12px; color: var(--primary);">⚙️ Configuração da Plataforma</h3>
-          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Informe os dados da sua loja Yampi (Configurações &gt; Chaves de API).</p>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px;">Conecte suas lojas para importar produtos como rascunho e revisar antes de publicar.</p>
           
           <div class="form-group">
             <label for="cfg-plataforma">Plataforma</label>
             <select id="cfg-plataforma">
               <option value="yampi">Yampi</option>
+              <option value="shopify">Shopify</option>
+              <option value="nuvemshop">Nuvemshop</option>
             </select>
           </div>
-
+          <div id="yampi-config-fields">
           <div class="form-group">
             <label for="cfg-url">Yampi Alias (Nome da Loja)</label>
             <input type="text" id="cfg-url" placeholder="alias-da-sua-loja">
@@ -504,7 +513,17 @@
             <label for="cfg-secret">Yampi User-Secret-Key</label>
             <input type="password" id="cfg-secret" placeholder="Já salvo. Preencha só para trocar" autocomplete="off">
           </div>
-
+          </div>
+          <div id="shopify-connect-fields" style="display:none;">
+            <div class="form-group"><label for="cfg-shopify-domain">Domínio Shopify</label>
+              <input type="text" id="cfg-shopify-domain" placeholder="minha-loja.myshopify.com"></div>
+            <button type="button" class="btn-submit" onclick="conectarShopify()">🔗 Conectar Shopify</button>
+          </div>
+          <div id="nuvemshop-connect-fields" style="display:none;">
+            <p class="hint" style="margin-bottom:12px;">A autorização abrirá a Nuvemshop para você escolher a loja e conceder acesso ao DropAI.</p>
+            <button type="button" class="btn-submit" onclick="conectarNuvemshop()">🔗 Conectar Nuvemshop</button>
+          </div>
+          <div class="hint" id="status-conexoes-lojas" style="margin-top:12px;"></div>
           <button type="button" class="btn-submit" onclick="salvarConfigLoja()">💾 Salvar Configurações</button>
         </div>
       </div>
@@ -534,16 +553,40 @@
               </div>
             </div>
 
+            <details class="form-group" style="margin-top:8px;">
+              <summary style="cursor:pointer;color:var(--primary);font-weight:650;">Dados complementares do anúncio</summary>
+              <div style="margin-top:14px;">
+                <div class="grid-2 form-group">
+                  <div><label for="marca">Marca (se conhecida)</label><input id="marca" type="text" placeholder="Marca do fabricante"></div>
+                  <div><label for="categoria">Categoria</label><input id="categoria" type="text" placeholder="ex.: Beleza e cuidados pessoais"></div>
+                </div>
+                <div class="grid-2 form-group">
+                  <div><label for="gtin">Código de barras (EAN/GTIN)</label><input id="gtin" type="text" inputmode="numeric" placeholder="Somente se confirmado"></div>
+                  <div><label for="ncm">NCM (quando conhecido)</label><input id="ncm" type="text" inputmode="numeric" placeholder="8 dígitos"></div>
+                </div>
+                <div class="grid-2 form-group">
+                  <div><label for="garantia-meses">Garantia (meses)</label><input id="garantia-meses" type="number" min="0" max="120" placeholder="Deixe vazio se não souber"></div>
+                  <div><label for="video-url">Vídeo do produto (YouTube)</label><input id="video-url" type="url" placeholder="Cole ou escolha um resultado abaixo"></div>
+                </div>
+                <div class="form-group">
+                  <button type="button" class="btn-secondary" onclick="buscarVideosProduto()">🔎 Buscar vídeos sobre este produto</button>
+                  <div id="resultados-videos" class="hint" style="margin-top:8px;"></div>
+                </div>
+              </div>
+            </details>
+
             <div class="form-group">
               <label for="imagens">Imagens do Produto (links diretos, um por linha)</label>
               <textarea id="imagens" placeholder="https://.../foto1.jpg&#10;https://.../foto2.jpg"></textarea>
               <div class="hint">Se deixar vazio e o campo de cima for um link, o DropAI tenta buscar as fotos da página. Use só imagens que você tem direito de usar.</div>
+              <button type="button" class="btn-secondary" style="margin-top:10px;" onclick="buscarImagensProduto()">🔎 Buscar imagens do produto na internet</button>
+              <div id="resultados-imagens" class="hint" style="margin-top:8px;"></div>
             </div>
 
             <div class="grid-2 form-group">
               <div>
-                <label for="estoque">Estoque inicial</label>
-                <input type="number" id="estoque" value="50" min="0" inputmode="numeric">
+              <label for="estoque">Estoque real</label>
+              <input type="number" id="estoque" value="0" min="0" inputmode="numeric">
               </div>
               <div>
                 <label for="peso">Peso em kg (opcional)</label>
@@ -569,6 +612,9 @@
             <span id="status-badge" style="font-size: 0.75rem; font-weight: 750;">Aguardando</span>
           </div>
           <div class="logs-box" id="logs-box">Iniciando tarefas...</div>
+          <div class="source-link-box" id="source-link-box" style="display:none;">
+            Produto de origem: <a id="source-link" target="_blank" rel="noopener noreferrer">Abrir anúncio original</a>
+          </div>
           <div class="preview-box" id="preview-box" style="display:none;">
             <div class="preview-title" id="prev-nome-titulo">Título Gerado</div>
             <iframe class="preview-frame" id="prev-desc-html" sandbox="" title="Prévia da descrição"></iframe>
@@ -618,6 +664,76 @@
       return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    function atualizarCamposPlataforma() {
+      const plataforma = document.getElementById('cfg-plataforma').value;
+      document.getElementById('yampi-config-fields').style.display = plataforma === 'yampi' ? 'block' : 'none';
+      document.getElementById('shopify-connect-fields').style.display = plataforma === 'shopify' ? 'block' : 'none';
+      document.getElementById('nuvemshop-connect-fields').style.display = plataforma === 'nuvemshop' ? 'block' : 'none';
+    }
+
+    function atualizarStatusConexoesLojas() {
+      api('/api/lojas/conexoes').then(res => {
+        const c = res.body || {};
+        const status = document.getElementById('status-conexoes-lojas');
+        const linha = (nome, dado) => `${dado?.conectada ? '✅' : '○'} ${nome}${dado?.conectada ? ' conectado' : (dado?.configurada ? ' pronto para autorizar' : ' aguardando configuração do aplicativo')}`;
+        status.innerHTML = `${c.yampi ? '✅ Yampi configurada' : '○ Yampi não configurada'}<br>${linha('Shopify', c.shopify)}<br>${linha('Nuvemshop', c.nuvemshop)}`;
+      });
+    }
+
+    function conectarShopify() {
+      const loja = document.getElementById('cfg-shopify-domain').value.trim().toLowerCase();
+      if(!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(loja)) {
+        alert('Informe o domínio terminado em .myshopify.com.'); return;
+      }
+      window.location.href = '/conectar/shopify?shop=' + encodeURIComponent(loja);
+    }
+
+    function conectarNuvemshop() {
+      window.location.href = '/conectar/nuvemshop';
+    }
+
+    function buscarVideosProduto() {
+      const nome = document.getElementById('nome').value.trim();
+      const termo = document.getElementById('prev-nome-titulo').innerText || nome;
+      if(!nome) { alert('Informe o nome ou link do produto primeiro.'); return; }
+      const destino = document.getElementById('resultados-videos');
+      destino.innerText = 'Buscando vídeos no YouTube…';
+      api('/api/videos/buscar', {termo: termo === 'Título Gerado' ? nome : termo}).then(res => {
+        if(res.body.erro) { destino.innerText = res.body.erro; return; }
+        if(!res.body.videos?.length) { destino.innerText = 'Nenhum vídeo correspondente encontrado.'; return; }
+        destino.innerHTML = res.body.videos.map((v, i) => `<label style="display:block;margin:8px 0;cursor:pointer;"><input type="radio" name="video-candidato" value="${esc(v.url)}"> ${esc(v.titulo)} — ${esc(v.canal)} (<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">abrir</a>)</label>`).join('');
+        destino.querySelectorAll('input[name="video-candidato"]').forEach(radio => radio.addEventListener('change', () => {
+          if(radio.checked) document.getElementById('video-url').value = radio.value;
+        }));
+      });
+    }
+
+    function buscarImagensProduto() {
+      const nome = document.getElementById('nome').value.trim();
+      if(!nome) { alert('Informe o nome do produto antes de buscar.'); return; }
+      const destino = document.getElementById('resultados-imagens');
+      destino.innerText = 'Buscando imagens…';
+      api('/api/imagens/buscar', {termo: nome}).then(res => {
+        if(res.body.erro) { destino.innerText = res.body.erro; return; }
+        const imagens = res.body.imagens || [];
+        if(!imagens.length) { destino.innerText = 'Nenhuma imagem encontrada.'; return; }
+        destino.innerHTML = '<p>Confira se é exatamente o mesmo produto e se você tem autorização para usar cada imagem.</p>' + imagens.map((im, i) =>
+          `<div style="display:flex;gap:10px;align-items:center;margin:8px 0;padding:8px;border:1px solid var(--border);border-radius:8px;">
+            <img src="${esc(im.miniatura)}" alt="${esc(im.titulo)}" style="width:64px;height:64px;object-fit:contain;border-radius:6px;">
+            <span style="flex:1;">${esc(im.titulo)}<br><small>${esc(im.origem)}</small><br><a href="${esc(im.pagina)}" target="_blank" rel="noopener noreferrer">Ver página de origem</a></span>
+            <button type="button" class="btn-usar-imagem" data-indice="${i}">Usar</button>
+          </div>`).join('');
+        destino.querySelectorAll('.btn-usar-imagem').forEach(btn => btn.addEventListener('click', () => {
+          const escolhida = imagens[Number(btn.dataset.indice)];
+          const caixa = document.getElementById('imagens');
+          const existentes = caixa.value.split(/\s+/).filter(Boolean);
+          if(!existentes.includes(escolhida.url)) existentes.push(escolhida.url);
+          caixa.value = existentes.join('\n');
+          btn.innerText = 'Adicionada'; btn.disabled = true;
+        }));
+      });
+    }
+
     function sessaoExpirou() {
       usuarioAtual = null;
       document.getElementById('app-screen').style.display = 'none';
@@ -626,11 +742,14 @@
     }
 
     window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('cfg-plataforma').addEventListener('change', atualizarCamposPlataforma);
       localStorage.removeItem('dropai_user'); // limpa dados antigos (versões anteriores guardavam chaves aqui)
       api('/api/auth/eu').then(res => {
         if (res.status === 200 && res.body.sucesso) {
           usuarioAtual = res.body.user;
           entrarNoPainel();
+          const ligado = new URLSearchParams(window.location.search).get('integracao');
+          if(ligado) { alert(`${ligado === 'nuvemshop' ? 'Nuvemshop' : 'Shopify'} conectada ao DropAI.`); history.replaceState({}, '', '/'); }
         }
       });
     });
@@ -768,6 +887,8 @@
       document.getElementById('cfg-url').value = usuarioAtual.loja_url || '';
       document.getElementById('cfg-token').value = '';
       document.getElementById('cfg-secret').value = '';
+      atualizarCamposPlataforma();
+      atualizarStatusConexoesLojas();
 
       atualizarStatusWhatsapp();
 
@@ -856,7 +977,8 @@
         if(res.body.sucesso) {
           usuarioAtual.plataforma = plataforma;
           usuarioAtual.loja_url = loja_url;
-          if(api_token) usuarioAtual.loja_configurada = true;
+          usuarioAtual.loja_configurada = true;
+          atualizarStatusConexoesLojas();
           document.getElementById('cfg-token').value = '';
           document.getElementById('cfg-secret').value = '';
           alert('Configurações salvas!');
@@ -881,6 +1003,12 @@
       const imagens = document.getElementById('imagens').value.trim();
       const estoque = document.getElementById('estoque').value.trim();
       const peso = document.getElementById('peso').value.trim();
+      const marca = document.getElementById('marca').value.trim();
+      const categoria = document.getElementById('categoria').value.trim();
+      const gtin = document.getElementById('gtin').value.trim();
+      const ncm = document.getElementById('ncm').value.trim();
+      const garantia_meses = document.getElementById('garantia-meses').value.trim();
+      const video_url = document.getElementById('video-url').value.trim();
 
       if(!nome || !custo) {
         alert('Preencha o nome e o preço de custo.');
@@ -897,8 +1025,9 @@
       cardStatus.style.display = 'block';
       logsBox.innerText = 'Enviando produto para o motor DropAI...';
       document.getElementById('preview-box').style.display = 'none';
+      document.getElementById('source-link-box').style.display = 'none';
 
-      api('/api/produtos', {nome, descricao, custo, sku, imagens, estoque, peso})
+      api('/api/produtos', {nome, descricao, custo, sku, imagens, estoque, peso, marca, categoria, gtin, ncm, garantia_meses, video_url})
       .then(res => {
         if(res.body.erro) {
           alert(res.body.erro);
@@ -923,6 +1052,18 @@
           const logsBox = document.getElementById('logs-box');
           logsBox.innerText = job.log.join('\n');
           logsBox.scrollTop = logsBox.scrollHeight;
+
+          if(job.link_origem) {
+            try {
+              const origem = new URL(job.link_origem);
+              if(origem.protocol === 'https:' || origem.protocol === 'http:') {
+                const link = document.getElementById('source-link');
+                link.href = origem.href;
+                link.textContent = origem.hostname;
+                document.getElementById('source-link-box').style.display = 'block';
+              }
+            } catch(e) {}
+          }
 
           if(job.status === 'ok' || job.status === 'erro') {
             clearInterval(interval);
