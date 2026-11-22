@@ -873,9 +873,9 @@ def processar(job_id, d):
             else:
                 reg("⚠️ Nenhuma imagem válida. Cole links diretos de fotos no campo Imagens.")
 
-            reg(f"Cadastrando na {plataforma.upper()} com multiplicador 2x...")
+            reg(f"Cadastrando na {plataforma.upper()} com multiplicador 1,5x...")
 
-            venda = d["custo"] * 2.0
+            venda = d["custo"] * 1.5
             ok = False
 
             if plataforma == "yampi":
@@ -895,7 +895,7 @@ def processar(job_id, d):
                     )
                 except Exception as erro_db:
                     reg("⚠️ O produto foi criado na loja, mas não consegui salvar no histórico: " + str(erro_db))
-                reg(f"Sucesso! Produto cadastrado. Preço de Venda (2x): R$ {venda:.2f}")
+                reg(f"Sucesso! Produto cadastrado. Preço de Venda (1,5x): R$ {venda:.2f}")
             else:
                 job["status"] = "erro"
         except Exception as erro:
