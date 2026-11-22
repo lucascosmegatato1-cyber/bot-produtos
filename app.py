@@ -1746,6 +1746,59 @@ def buscar_imagens_produto():
         return jsonify(erro="Não foi possível consultar a busca de imagens agora."), 502
 
 
+
+# ---------------------------------------------------------------------------
+# WEBHOOKS DE PRIVACIDADE NUVEMSHOP (LGPD)
+# ---------------------------------------------------------------------------
+def _validar_webhook_nuvemshop():
+    if not NUVEMSHOP_APP_SECRET:
+        return False
+    recebido = request.headers.get("x-linkedstore-hmac-sha256", "")
+    esperado = hmac.new(NUVEMSHOP_APP_SECRET.encode("utf-8"),
+                        request.get_data(cache=True), hashlib.sha256).hexdigest()
+    return bool(recebido) and hmac.compare_digest(recebido, esperado)
+
+
+def _payload_webhook_nuvemshop():
+    try:
+        return request.get_json(silent=True) or {}
+    except Exception:
+        return {}
+
+
+@app.route("/webhooks/nuvemshop/store-redact", methods=["POST"])
+def nuvemshop_store_redact():
+    if not _validar_webhook_nuvemshop():
+        return "Assinatura inválida", 401
+    payload = _payload_webhook_nuvemshop()
+    store_id = str(payload.get("store_id") or payload.get("user_id") or "").strip()
+    if not store_id:
+        return "Identificador da loja ausente", 400
+    usuarios = db_run("SELECT user_id FROM store_connections WHERE platform = ? AND store_id = ?",
+                      ["nuvemshop", store_id], fetch=True) or []
+    db_run("DELETE FROM store_connections WHERE platform = ? AND store_id = ?", ["nuvemshop", store_id])
+    for (user_id,) in usuarios:
+        db_run("UPDATE usuarios SET plataforma = 'yampi', loja_url = NULL WHERE id = ? AND plataforma = 'nuvemshop' AND loja_url = ?",
+               [user_id, store_id])
+    return jsonify(sucesso=True)
+
+
+@app.route("/webhooks/nuvemshop/customer-redact", methods=["POST"])
+def nuvemshop_customer_redact():
+    if not _validar_webhook_nuvemshop():
+        return "Assinatura inválida", 401
+    # O DropAI não armazena dados pessoais de clientes da Nuvemshop.
+    return jsonify(sucesso=True, dados_pessoais_armazenados=False)
+
+
+@app.route("/webhooks/nuvemshop/customers-data-request", methods=["POST"])
+def nuvemshop_customers_data_request():
+    if not _validar_webhook_nuvemshop():
+        return "Assinatura inválida", 401
+    # O DropAI não armazena dados pessoais de clientes da Nuvemshop.
+    return jsonify(sucesso=True, dados_pessoais_armazenados=False)
+
+
 # ---------------------------------------------------------------------------
 # PRODUTOS
 # ---------------------------------------------------------------------------
