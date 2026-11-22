@@ -12,6 +12,7 @@ import secrets
 import threading
 import ipaddress
 from html import unescape
+from html.parser import HTMLParser
 from functools import wraps
 from urllib.parse import urlparse, urljoin
 
@@ -427,36 +428,69 @@ def url_publica_segura(url):
         return False
 
 
-def _achar_produto_jsonld(obj):
+def _iterar_produtos_jsonld(obj):
+    """Percorre produtos em listas, @graph e estruturas aninhadas."""
     if isinstance(obj, list):
         for item in obj:
-            r = _achar_produto_jsonld(item)
-            if r:
-                return r
+            yield from _iterar_produtos_jsonld(item)
     elif isinstance(obj, dict):
-        tipo = obj.get("@type")
-        tipos = tipo if isinstance(tipo, list) else [tipo]
-        if "Product" in tipos:
-            return obj
-        for v in obj.values():
-            if isinstance(v, (list, dict)):
-                r = _achar_produto_jsonld(v)
-                if r:
-                    return r
-    return None
+        tipos = obj.get("@type") or []
+        tipos = tipos if isinstance(tipos, list) else [tipos]
+        if any(str(tipo).lower() in ("product", "productgroup") for tipo in tipos):
+            yield obj
+        for valor in obj.values():
+            if isinstance(valor, (list, dict)):
+                yield from _iterar_produtos_jsonld(valor)
 
 
 def _urls_de_imagem(valor):
     if isinstance(valor, str):
         return [valor]
     if isinstance(valor, dict):
-        return _urls_de_imagem(valor.get("url") or valor.get("contentUrl") or "")
+        return _urls_de_imagem(valor.get("url") or valor.get("contentUrl") or valor.get("@id") or "")
     if isinstance(valor, list):
-        saida = []
-        for v in valor:
-            saida += _urls_de_imagem(v)
-        return saida
+        return [url for item in valor for url in _urls_de_imagem(item)]
     return []
+
+
+def _urls_srcset(valor):
+    urls = []
+    for item in str(valor or "").split(","):
+        campos = item.strip().split()
+        if campos:
+            urls.append(campos[0])
+    return urls
+
+
+class _ColetorProduto(HTMLParser):
+    """Coleta metadados e imagens normais/lazy-load sem dependência externa."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.metadados = []
+        self.imagens = []
+
+    def handle_starttag(self, tag, attrs):
+        a = {str(k).lower(): (v or "") for k, v in attrs if k}
+        tag = tag.lower()
+        if tag == "meta":
+            nome = (a.get("property") or a.get("name") or a.get("itemprop") or "").lower()
+            if nome and a.get("content"):
+                self.metadados.append((nome, a["content"].strip()))
+        elif tag in ("img", "source"):
+            contexto = " ".join(a.get(k, "") for k in ("alt", "title", "class", "id", "itemprop", "data-testid"))
+            if (re.search(r"logo|avatar|favicon|payment|pagamento|facebook|instagram|whatsapp|sprite|placeholder", contexto, re.I)
+                    and a.get("itemprop", "").lower() != "image"):
+                return
+            score = 1 if re.search(r"product|produto|gallery|galeria|zoom|principal|main-image", contexto, re.I) else 0
+            if a.get("itemprop", "").lower() == "image":
+                score += 4
+            if a.get("data-zoom-image") or a.get("data-large_image"):
+                score += 3
+            for chave in ("data-zoom-image", "data-large_image", "data-original", "data-lazy-src", "data-src", "data-image", "src"):
+                if a.get(chave):
+                    self.imagens.append((score, a[chave]))
+            for chave in ("data-srcset", "srcset"):
+                self.imagens.extend((score + 1, url) for url in _urls_srcset(a.get(chave)))
 
 
 def _texto_visivel(html):
@@ -465,93 +499,171 @@ def _texto_visivel(html):
     return re.sub(r"\s+", " ", txt).strip()
 
 
+def _buscar_url_publica(url, headers, timeout=20, stream=False, max_redirecionamentos=5):
+    """Segue redirects um a um e valida cada destino para bloquear SSRF via redirecionamento."""
+    atual = url
+    for _ in range(max_redirecionamentos + 1):
+        if not url_publica_segura(atual):
+            raise ValueError("destino não público")
+        resposta = requests.get(atual, headers=headers, timeout=timeout, stream=stream, allow_redirects=False)
+        if resposta.status_code not in (301, 302, 303, 307, 308):
+            resposta.url_final_dropai = atual
+            return resposta
+        destino = resposta.headers.get("Location")
+        resposta.close()
+        if not destino:
+            raise ValueError("redirect sem destino")
+        atual = urljoin(atual, destino)
+    raise ValueError("redirecionamentos demais")
+
+
+def _extrair_shopify(url):
+    """Obtém a galeria e descrição pelo endpoint público de produto Shopify, quando disponível."""
+    p = urlparse(url)
+    m = re.search(r"/products/([^/?#]+)", p.path, re.I)
+    if not m:
+        return None
+    endpoint = f"{p.scheme}://{p.netloc}/products/{m.group(1)}.js"
+    try:
+        r = _buscar_url_publica(endpoint, {"User-Agent": UA_NAVEGADOR, "Accept": "application/json"}, timeout=12)
+        if r.status_code != 200 or "json" not in r.headers.get("Content-Type", "").lower():
+            r.close()
+            return None
+        dado = r.json()
+        r.close()
+        linhas = []
+        for chave, rotulo in (("title", "Nome do produto"), ("body_html", "Descrição do produto"),
+                              ("vendor", "Marca"), ("product_type", "Tipo do produto")):
+            if dado.get(chave):
+                valor = _texto_visivel(str(dado[chave])) if chave == "body_html" else unescape(str(dado[chave]))
+                if valor:
+                    linhas.append(rotulo + ": " + valor)
+        return {"imagens": _urls_de_imagem(dado.get("images") or dado.get("image")),
+                "texto": "\n".join(linhas)}
+    except Exception:
+        return None
+
+
 def extrair_dados_da_pagina(url, registrar):
-    """Lê a página do produto original e devolve fotos + texto (título, descrição, marca, detalhes)."""
+    """Extrai fotos da galeria/anúncio e texto original da página do produto."""
     vazio = {"imagens": [], "texto": ""}
     if not url_publica_segura(url):
         registrar("Link de origem inválido ou não permitido para leitura.")
         return vazio
     try:
-        r = requests.get(url, headers={"User-Agent": UA_NAVEGADOR, "Accept-Language": "pt-BR,pt;q=0.9"}, timeout=20)
+        r = _buscar_url_publica(url, {"User-Agent": UA_NAVEGADOR,
+                                     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"}, timeout=20)
     except Exception:
-        registrar("Não foi possível abrir a página de origem.")
+        registrar("Não foi possível abrir a página de origem com segurança.")
         return vazio
     if r.status_code != 200:
-        registrar(f"A página de origem bloqueou a leitura (erro {r.status_code}). Cole as fotos e detalhes manualmente.")
+        status = r.status_code
+        r.close()
+        registrar(f"A página de origem bloqueou a leitura (erro {status}); tente um link público ou cole os detalhes manualmente.")
         return vazio
-
     html = r.text[:2_500_000]
-    imagens, partes = [], []
+    url_final = getattr(r, "url_final_dropai", url)
+    r.close()
 
-    for tag in re.findall(r"<meta[^>]+>", html, re.I):
-        m_nome = re.search(r'(?:property|name)=["\']([^"\']+)["\']', tag, re.I)
-        m_cont = re.search(r'content=["\']([^"\']*)["\']', tag, re.I)
-        if not m_nome or not m_cont:
-            continue
-        nome, conteudo = m_nome.group(1).lower(), unescape(m_cont.group(1)).strip()
-        if nome in ("og:image", "og:image:secure_url", "twitter:image"):
+    parser = _ColetorProduto()
+    try:
+        parser.feed(html)
+    except Exception:
+        pass
+    imagens, partes, produtos = [], [], []
+    for nome, conteudo in parser.metadados:
+        if nome in ("og:image", "og:image:secure_url", "twitter:image", "image", "image_url"):
             imagens.append(conteudo)
-        elif nome in ("og:title", "twitter:title") and conteudo:
+        elif nome in ("og:title", "twitter:title"):
             partes.append("Título original: " + conteudo)
-        elif nome in ("og:description", "description", "twitter:description") and conteudo:
+        elif nome in ("og:description", "description", "twitter:description"):
             partes.append("Descrição original: " + conteudo)
 
     for bloco in re.findall(r'(?is)<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html):
         try:
-            prod = _achar_produto_jsonld(json.loads(bloco.strip()))
+            produtos.extend(_iterar_produtos_jsonld(json.loads(unescape(bloco.strip()))))
         except Exception:
             continue
-        if not prod:
-            continue
+    if len(produtos) > 1:
+        caminho_origem = urlparse(url_final).path.rstrip("/").casefold()
+        correspondentes = []
+        for prod in produtos:
+            identificador = str(prod.get("url") or prod.get("@id") or "")
+            if identificador and urlparse(urljoin(url_final, identificador)).path.rstrip("/").casefold() == caminho_origem:
+                correspondentes.append(prod)
+        produtos = correspondentes[:1] or produtos[:1]
+    for prod in produtos:
         if prod.get("name"):
             partes.append("Nome do produto: " + str(prod["name"]))
         if prod.get("description"):
-            partes.append("Descrição do produto: " + unescape(str(prod["description"])))
+            partes.append("Descrição do produto: " + _texto_visivel(unescape(str(prod["description"]))))
         marca = prod.get("brand")
         marca = marca.get("name") if isinstance(marca, dict) else marca
         if marca:
             partes.append("Marca: " + str(marca))
-        imagens += _urls_de_imagem(prod.get("image"))
+        imagens.extend(_urls_de_imagem(prod.get("image")))
 
-    if not imagens:  # alternativa: campos "image" soltos no HTML
-        for bloco in re.findall(r'"image"\s*:\s*(\[[^\]]*\]|"[^"]+")', html):
-            imagens += re.findall(r'https?:[^"\\]+', bloco.replace("\\/", "/"))
+    # O JSON público Shopify costuma trazer todas as fotos e o texto completo do anúncio.
+    if len(imagens) < 2 or not any("Descrição do produto:" in p for p in partes):
+        shopify = _extrair_shopify(url_final)
+        if shopify:
+            imagens.extend(shopify["imagens"])
+            partes.extend(shopify["texto"].splitlines())
 
-    final, vistos = [], set()
-    for u in imagens:
-        u = urljoin(url, u.replace("&amp;", "&").replace("\\/", "/").strip())
-        if u not in vistos:
-            vistos.add(u)
-            final.append(u)
+    # Complementa com todas as imagens de galeria e lazy-load do HTML.
+    imagens.extend(url for _, url in sorted(parser.imagens, key=lambda item: -item[0]))
+    corpo = _texto_visivel(html)
+    if corpo and not any("Descrição do produto:" in p or "Descrição original:" in p for p in partes):
+        partes.append("Texto visível do anúncio: " + corpo[:3000])
 
-    corpo = _texto_visivel(html)[:3000]
-    if corpo:
-        partes.append("Texto visível da página: " + corpo)
-    return {"imagens": final, "texto": "\n".join(partes)[:6000]}
+    imagens_final, vistas = [], set()
+    for imagem in imagens:
+        imagem = urljoin(url_final, unescape(str(imagem)).replace("&amp;", "&").replace("\\/", "/").strip())
+        if not imagem or imagem.startswith("data:") or imagem in vistas:
+            continue
+        vistas.add(imagem)
+        imagens_final.append(imagem)
+    texto_final, partes_vistas = [], set()
+    for parte in partes:
+        parte = re.sub(r"\s+", " ", unescape(str(parte))).strip()
+        if parte and parte.casefold() not in partes_vistas:
+            partes_vistas.add(parte.casefold())
+            texto_final.append(parte)
+    tem_descricao = any("Descrição" in parte for parte in texto_final)
+    resumo = "descrição coletada" if tem_descricao else "descrição não detectada na página"
+    registrar(f"Página lida: {len(imagens_final)} foto(s) encontrada(s); {resumo}.")
+    return {"imagens": imagens_final[:40], "texto": "\n".join(texto_final)[:12000]}
 
 
 def validar_imagens(urls, registrar, limite=MAX_IMAGENS):
-    """Mantém só URLs que realmente respondem como imagem (a Yampi baixa a foto a partir do link)."""
+    """Confirma URLs de imagem públicas e acessíveis antes de enviar à plataforma da loja."""
     validas = []
     for u in urls:
         if len(validas) >= limite:
             break
         u = str(u).strip()
-        if not u or not url_publica_segura(u):
+        if not u:
             continue
         try:
-            r = requests.get(u, headers={"User-Agent": UA_NAVEGADOR}, timeout=15, stream=True)
+            r = _buscar_url_publica(u, {"User-Agent": UA_NAVEGADOR}, timeout=15, stream=True)
             tipo = r.headers.get("Content-Type", "").lower()
             tamanho = int(r.headers.get("Content-Length") or 0)
+            if not tamanho and r.status_code == 200:
+                tamanho = 0
+                for bloco in r.iter_content(64 * 1024):
+                    tamanho += len(bloco)
+                    if tamanho > 10_000_000:
+                        break
+            final = getattr(r, "url_final_dropai", u)
             r.close()
-            if r.status_code == 200 and tipo.startswith("image/") and tamanho < 10_000_000:
-                validas.append(u)
+            if r.status_code == 200 and tipo.startswith("image/") and 0 < tamanho < 10_000_000:
+                if final not in validas:
+                    validas.append(final)
             else:
-                registrar("Imagem ignorada (não carregou como imagem): " + u[:80])
+                registrar("Uma foto da origem foi ignorada por não abrir como imagem ou ultrapassar 10 MB.")
         except Exception:
-            registrar("Imagem ignorada (falha ao baixar): " + u[:80])
+            registrar("Uma foto da origem foi ignorada porque não pôde ser validada com segurança.")
     return validas
-
 
 # ---------------------------------------------------------------------------
 # YAMPI
@@ -728,13 +840,16 @@ def processar(job_id, d):
             # --- página do produto original: fotos e informações ---
             imagens = list(d.get("imagens") or [])
             texto_origem = ""
-            link = str(d["nome"]).split()[0] if str(d["nome"]).lower().startswith("http") else ""
+            link = str(d.get("link_origem") or "").strip()
+            if not link and str(d["nome"]).lower().startswith(("http://", "https://")):
+                link = str(d["nome"]).split()[0]
+            job["link_origem"] = link
             if link:
                 reg("🔎 Lendo a página do produto original...")
-                pagina = extrair_dados_da_pagina(link, reg)
+                reg("🔗 Origem: " + link)
+                pagina = extrair_dados_da_pagina(link, reg, d.get("nome", ""))
                 texto_origem = pagina["texto"]
-                if not imagens:
-                    imagens = pagina["imagens"]
+                imagens.extend(pagina["imagens"])
                 if texto_origem:
                     reg("📄 Informações do produto original coletadas.")
 
@@ -771,6 +886,15 @@ def processar(job_id, d):
 
             if ok:
                 job["status"] = "ok"
+                try:
+                    db_run(
+                        "INSERT INTO meus_produtos (usuario_email, tipo, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado) VALUES (?, 'fisico', ?, ?, ?, ?, ?, ?, ?)",
+                        [d["usuario_email"], analise.get("titulo", d["nome"]),
+                         analise.get("descricao_html", d["descricao"]), d["custo"], venda,
+                         job.get("link_origem", ""), (imagens[0] if imagens else ""), time.time()]
+                    )
+                except Exception as erro_db:
+                    reg("⚠️ O produto foi criado na loja, mas não consegui salvar no histórico: " + str(erro_db))
                 reg(f"Sucesso! Produto cadastrado. Preço de Venda (2x): R$ {venda:.2f}")
             else:
                 job["status"] = "erro"
@@ -1250,6 +1374,10 @@ def novo():
     if not u["loja_url"] or not u["api_token"]:
         return jsonify(erro="Configure sua loja na aba Loja antes de importar."), 400
 
+    link_origem = str(d.get("link_origem", "")).strip()
+    if link_origem and not url_publica_segura(link_origem):
+        return jsonify(erro="O link de origem precisa ser uma URL pública válida (http ou https)."), 400
+
     # Estoque inicial (padrão vem da variável ESTOQUE_PADRAO)
     try:
         estoque = int(str(d.get("estoque", "")).strip() or ESTOQUE_PADRAO)
@@ -1288,10 +1416,12 @@ def novo():
         "estoque": estoque,
         "peso": peso,
         "imagens": imagens,
+        "link_origem": link_origem,
         "plataforma": u["plataforma"],
         "loja_url": u["loja_url"],
         "api_token": u["api_token"],
         "api_secret": u["api_secret"],
+        "usuario_email": u["email"],
         "eh_vip": u["eh_vip"],   # vem do servidor, não do navegador
     }
 
@@ -1328,7 +1458,19 @@ def status(job_id):
     job = JOBS.get(job_id)
     if not job or job.get("dono") != g.usuario["email"]:
         return jsonify(erro="Tarefa não encontrada"), 404
-    return jsonify(status=job["status"], log=job["log"], resultado_ia=job.get("resultado_ia"))
+    return jsonify(status=job["status"], log=job["log"], resultado_ia=job.get("resultado_ia"),
+                   link_origem=job.get("link_origem", ""))
+
+
+@app.route("/api/meus-produtos")
+@requer_login
+def meus_produtos():
+    linhas = db_run(
+        "SELECT id, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado FROM meus_produtos WHERE usuario_email = ? ORDER BY criado DESC LIMIT 50",
+        [g.usuario["email"]], fetch=True
+    ) or []
+    chaves = ("id", "nome", "descricao", "custo", "preco_venda", "link_origem", "imagem_url", "criado")
+    return jsonify(produtos=[dict(zip(chaves, linha)) for linha in linhas])
 
 
 @app.route("/manifest.json")
@@ -1356,3 +1498,4 @@ def service_worker():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
