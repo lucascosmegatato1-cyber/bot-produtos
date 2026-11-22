@@ -1630,7 +1630,7 @@ def _shopify_callback_hmac_valido(args):
         return False
     mensagem = "&".join(f"{k}={v}" for k, v in sorted(args.items()) if k not in ("hmac", "signature"))
     esperado = hmac.new(SHOPIFY_CLIENT_SECRET.encode(), mensagem.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(recebido, esperado)
+    return hmac.compare_digest(recibido, esperado)
 
 
 @app.route("/oauth/shopify/callback")
