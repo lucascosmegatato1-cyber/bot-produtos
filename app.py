@@ -11,15 +11,17 @@ import hashlib
 import secrets
 import threading
 import ipaddress
+import base64
 from html import unescape
 from html.parser import HTMLParser
 from functools import wraps
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlencode, quote
 
 import requests
-from flask import Flask, request, jsonify, Response, send_file, g
+from flask import Flask, request, jsonify, Response, send_file, g, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from cryptography.fernet import Fernet, InvalidToken
 
 app = Flask(__name__)
 # IMPORTANTE: defina FLASK_SECRET no Render (texto longo e aleatório). Sem ele, uma chave
@@ -34,11 +36,18 @@ EMAILS_VIP = [
 ]
 
 CHAVE_GOOGLE = os.environ.get("CHAVE_GOOGLE", "")
-NOME_MARCA = os.environ.get("NOME_MARCA", "DropAI Premium")
+NOME_MARCA = os.environ.get("NOME_MARCA", "").strip()
 MODELO_PREFERIDO = os.environ.get("MODELO_PREFERIDO", "gemini-3.8-flash")
 PUBLICAR_DIRETO = os.environ.get("PUBLICAR_DIRETO", "nao").lower() == "sim"
-ESTOQUE_PADRAO = int(os.environ.get("ESTOQUE_PADRAO", "50"))
+ESTOQUE_PADRAO = int(os.environ.get("ESTOQUE_PADRAO", "0"))
 MAX_IMAGENS = 8
+SHOPIFY_CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+NUVEMSHOP_APP_ID = os.environ.get("NUVEMSHOP_APP_ID", "").strip()
+NUVEMSHOP_APP_SECRET = os.environ.get("NUVEMSHOP_APP_SECRET", "").strip()
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
+SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "").strip()
+APP_BASE_URL = os.environ.get("APP_BASE_URL", os.environ.get("RENDER_EXTERNAL_URL", "https://bot-produtos.onrender.com")).rstrip("/")
 
 TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
@@ -63,6 +72,14 @@ LOCK_PROCESSAMENTO = threading.Lock()
 
 UA_NAVEGADOR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+# Tokens OAuth das lojas são cifrados antes de serem gravados no store_connections.
+# A chave deriva do FLASK_SECRET estável já exigido em produção.
+CHAVE_CIFRAGEM_LOJAS = base64.urlsafe_b64encode(
+    hashlib.sha256((app.secret_key + "|dropai-store-connections").encode("utf-8")).digest()
+)
+CIFRADOR_LOJAS = Fernet(CHAVE_CIFRAGEM_LOJAS)
+SERIALIZADOR_OAUTH = URLSafeTimedSerializer(app.secret_key, salt="dropai-store-oauth")
 
 
 # Turso é usado sempre que URL e token existirem. O app fala com o Turso direto por HTTP,
@@ -237,7 +254,8 @@ def init_db():
     # Bancos criados em versões anteriores: acrescenta as colunas novas (ignora se já existirem)
     for alter in ("ALTER TABLE usuarios ADD COLUMN telefone TEXT",
                   "ALTER TABLE usuarios ADD COLUMN telefone_verificado INTEGER DEFAULT 0",
-                  "ALTER TABLE codigos_recuperacao ADD COLUMN destino TEXT"):
+                  "ALTER TABLE codigos_recuperacao ADD COLUMN destino TEXT",
+                  "ALTER TABLE meus_produtos ADD COLUMN plataforma TEXT DEFAULT 'yampi'"):
         try:
             db_run(alter)
         except Exception:
@@ -362,9 +380,11 @@ Tarefas:
 4. Crie "search_terms": palavras-chave separadas por virgula (maximo 10).
 5. Crie "especificacoes_html": uma lista HTML (<ul><li>) com as principais especificacoes tecnicas do produto.
 6. Estime as medidas da embalagem para calculo de frete: "peso_kg", "altura_cm", "largura_cm", "comprimento_cm" (numeros realistas).
+7. Extraia a marca, categoria, GTIN/EAN, NCM, garantia e SKU somente se esses dados aparecerem na origem. Caso contrário use string vazia. Nunca invente esses identificadores ou dados comerciais.
+8. Devolva "tags" com até 10 termos relevantes separados por vírgula.
 
 Responda EXCLUSIVAMENTE em JSON com as chaves exatas:
-{{"eh_tendencia": true, "titulo": "...", "descricao_html": "...", "seo_title": "...", "seo_description": "...", "search_terms": "...", "especificacoes_html": "...", "peso_kg": 0.3, "altura_cm": 10, "largura_cm": 15, "comprimento_cm": 20}}
+{{"eh_tendencia": true, "titulo": "...", "descricao_html": "...", "seo_title": "...", "seo_description": "...", "search_terms": "...", "tags": "...", "especificacoes_html": "...", "marca": "", "categoria": "", "gtin": "", "ncm": "", "garantia": "", "peso_kg": 0.3, "altura_cm": 10, "largura_cm": 15, "comprimento_cm": 20}}
 """
     corpo = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -601,6 +621,21 @@ def extrair_dados_da_pagina(url, registrar):
         marca = marca.get("name") if isinstance(marca, dict) else marca
         if marca:
             partes.append("Marca: " + str(marca))
+        for chave, rotulo in (("category", "Categoria"), ("sku", "SKU"), ("gtin", "GTIN/EAN"),
+                              ("gtin8", "GTIN/EAN"), ("gtin12", "GTIN/EAN"), ("gtin13", "GTIN/EAN"),
+                              ("gtin14", "GTIN/EAN"), ("mpn", "Código do fabricante"),
+                              ("color", "Cor"), ("size", "Tamanho"), ("material", "Material")):
+            valor = prod.get(chave)
+            if valor and not isinstance(valor, (dict, list)):
+                partes.append(f"{rotulo}: {valor}")
+        ofertas = prod.get("offers")
+        ofertas = ofertas[0] if isinstance(ofertas, list) and ofertas else ofertas
+        if isinstance(ofertas, dict):
+            disponibilidade = str(ofertas.get("availability", "")).rsplit("/", 1)[-1]
+            if disponibilidade:
+                partes.append("Disponibilidade informada na origem: " + disponibilidade)
+            if ofertas.get("price"):
+                partes.append("Preço indicado na origem: " + str(ofertas["price"]))
         imagens.extend(_urls_de_imagem(prod.get("image")))
 
     # O JSON público Shopify costuma trazer todas as fotos e o texto completo do anúncio.
@@ -719,42 +754,31 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
     base_yampi = raiz + "/catalog"
     headers = {"User-Token": user_token, "User-Secret-Key": secret_key, "Content-Type": "application/json"}
     
-    r = requests.get(base_yampi + "/brands", headers=headers, params={"name": NOME_MARCA}, timeout=60)
+    marca = str(analise.get("marca") or NOME_MARCA or "").strip()
     brand_id = None
-    if r.status_code == 200:
-        data_json = r.json()
-        marcas = data_json.get("data", []) if isinstance(data_json, dict) else data_json
-        for m in marcas:
-            if isinstance(m, dict) and m.get("name", "").strip().lower() == NOME_MARCA.lower():
-                brand_id = m["id"]
-                break
-
-    if not brand_id:
-        r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": NOME_MARCA, "active": True}, timeout=60)
-        if r_brand.status_code in (200, 201):
-            res_b = r_brand.json()
-            brand_id = res_b.get("data", {}).get("id") or res_b.get("id")
-
-    if not brand_id:
-        r_all = requests.get(base_yampi + "/brands", headers=headers, timeout=60)
-        if r_all.status_code == 200:
-            all_data = r_all.json()
-            lista_marcas = all_data.get("data", []) if isinstance(all_data, dict) else all_data
-            if lista_marcas and isinstance(lista_marcas[0], dict):
-                brand_id = lista_marcas[0].get("id")
-
-    if not brand_id:
-        registrar("Erro na Yampi: Nenhuma marca encontrada na loja. Crie uma marca manualmente na Yampi.")
-        return False
+    if marca:
+        r = requests.get(base_yampi + "/brands", headers=headers, params={"name": marca}, timeout=60)
+        if r.status_code == 200:
+            data_json = r.json()
+            marcas = data_json.get("data", []) if isinstance(data_json, dict) else data_json
+            for m in marcas:
+                if isinstance(m, dict) and m.get("name", "").strip().lower() == marca.lower():
+                    brand_id = m["id"]
+                    break
+        if not brand_id:
+            r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": marca, "active": True}, timeout=60)
+            if r_brand.status_code in (200, 201):
+                res_b = r_brand.json()
+                brand_id = res_b.get("data", {}).get("id") or res_b.get("id")
 
     titulo = analise["titulo"]
     peso = peso_manual or _numero(analise.get("peso_kg"), 0.3)
 
     sku_corpo = {
         "sku": sku,
+        "barcode": str(analise.get("gtin") or "")[:64],
         "price_cost": round(custo, 2),
         "price_sale": round(venda, 2),
-        "price_discount": round(venda * 0.9, 2),
         "blocked_sale": False,
         "quantity_managed": True,
         "weight": round(peso, 3),
@@ -776,8 +800,14 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
         "seo_title": str(analise.get("seo_title") or titulo)[:60],
         "seo_description": str(analise.get("seo_description") or "")[:160],
         "search_terms": str(analise.get("search_terms") or "")[:250],
+        "google_category": str(analise.get("categoria") or "")[:160],
+        "ncm": str(analise.get("ncm") or "")[:16],
+        "video": str(analise.get("video_url") or "")[:500],
+        "warranty": _numero(analise.get("garantia_meses"), 0),
         "skus": [sku_corpo],
     }
+    if not brand_id:
+        corpo.pop("brand_id", None)
     r = requests.post(base_yampi + "/products", headers=headers, json=corpo, timeout=120)
     if r.status_code not in (200, 201):
         if r.status_code == 422 and ("slug" in r.text or '"name"' in r.text):
@@ -811,6 +841,132 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
     return True
 
 
+def _shopify_graphql(loja, token, query, variables=None):
+    url = f"https://{loja}/admin/api/2026-07/graphql.json"
+    resposta = requests.post(url, headers={"X-Shopify-Access-Token": token,
+                           "Content-Type": "application/json"},
+                           json={"query": query, "variables": variables or {}}, timeout=60)
+    dados = resposta.json() if resposta.content else {}
+    if resposta.status_code != 200 or dados.get("errors"):
+        erro = dados.get("errors") or dados
+        raise RuntimeError("Shopify API: " + json.dumps(erro, ensure_ascii=False)[:500])
+    return dados.get("data", {})
+
+
+def cadastrar_shopify(loja, token, analise, custo, venda, sku, imagens, estoque, peso_manual, registrar):
+    titulo = str(analise.get("titulo") or "Produto DropAI")[:255]
+    midias = [{"originalSource": url, "mediaContentType": "IMAGE", "alt": titulo} for url in imagens]
+    video = str(analise.get("video_url") or "").strip()
+    if video:
+        midias.append({"originalSource": video, "mediaContentType": "EXTERNAL_VIDEO", "alt": titulo})
+    produto = {"title": titulo, "descriptionHtml": analise.get("descricao_html", ""),
+               "vendor": str(analise.get("marca") or "")[:255],
+               "productType": str(analise.get("categoria") or "")[:255],
+               "status": "DRAFT", "tags": [x.strip() for x in str(analise.get("tags") or analise.get("search_terms") or "").split(",") if x.strip()][:10],
+               "seo": {"title": str(analise.get("seo_title") or titulo)[:70],
+                       "description": str(analise.get("seo_description") or "")[:320]}}
+    data = _shopify_graphql(loja, token, """
+        mutation ProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+          productCreate(product: $product, media: $media) {
+            product { id title variants(first: 1) { nodes { id inventoryItem { id } } } }
+            userErrors { field message }
+          }
+        }
+    """, {"product": produto, "media": midias})
+    payload = data.get("productCreate") or {}
+    if payload.get("userErrors") or not payload.get("product"):
+        raise RuntimeError("Shopify recusou o produto: " + json.dumps(payload.get("userErrors", []), ensure_ascii=False)[:400])
+    produto_id = payload["product"]["id"]
+    variantes = payload["product"].get("variants", {}).get("nodes", [])
+    if not variantes:
+        raise RuntimeError("Shopify criou o produto, mas não retornou o SKU inicial.")
+    variante = variantes[0]
+    peso = _numero(peso_manual, _numero(analise.get("peso_kg"), 0.3))
+    update = _shopify_graphql(loja, token, """
+        mutation UpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants { id }
+            userErrors { field message }
+          }
+        }
+    """, {"productId": produto_id, "variants": [{"id": variante["id"], "price": f"{venda:.2f}",
+          "barcode": str(analise.get("gtin") or "") or None,
+          "inventoryItem": {"sku": sku, "tracked": True, "requiresShipping": True, "cost": f"{custo:.2f}",
+              "measurement": {"weight": {"value": peso, "unit": "KILOGRAMS"}}}}]})
+    resultado = update.get("productVariantsBulkUpdate") or {}
+    if resultado.get("userErrors"):
+        registrar("⚠️ O produto foi criado como rascunho, mas alguns dados do SKU não foram aplicados: " + json.dumps(resultado["userErrors"], ensure_ascii=False)[:350])
+    else:
+        locations = _shopify_graphql(loja, token, "{ locations(first: 1, query: \"active:true\") { nodes { id name } } }")
+        locais = locations.get("locations", {}).get("nodes", [])
+        item = variante.get("inventoryItem", {}).get("id")
+        if locais and item:
+            qty = max(0, int(estoque))
+            inventory = _shopify_graphql(loja, token, """
+                mutation ActivateStock($inventoryItemId: ID!, $locationId: ID!, $available: Int!, $onHand: Int!, $key: String!) {
+                  inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId,
+                    available: $available, onHand: $onHand) @idempotent(key: $key) { userErrors { field message } }
+                }
+            """, {"inventoryItemId": item, "locationId": locais[0]["id"], "available": qty, "onHand": qty, "key": str(uuid.uuid4())})
+            errs = (inventory.get("inventoryActivate") or {}).get("userErrors", [])
+            if errs:
+                registrar("⚠️ Produto criado, mas o estoque da Shopify precisa de revisão: " + json.dumps(errs, ensure_ascii=False)[:300])
+            else:
+                registrar(f"📦 Shopify: estoque {qty} definido em {locais[0].get('name', 'local ativo')}.")
+        else:
+            registrar("⚠️ Produto criado, mas não encontrei local ativo para configurar o estoque Shopify.")
+    registrar(f"📝 Shopify: produto {titulo} salvo como rascunho; revise e publique no painel.")
+    return True
+
+
+def cadastrar_nuvemshop(loja_id, token, analise, custo, venda, sku, imagens, estoque, peso_manual, registrar):
+    titulo = str(analise.get("titulo") or "Produto DropAI")[:255]
+    peso = _numero(peso_manual, _numero(analise.get("peso_kg"), 0.3))
+    variante = {"price": f"{venda:.2f}", "cost": f"{custo:.2f}", "stock_management": True,
+                "stock": max(0, int(estoque)), "sku": sku,
+                "weight": f"{peso:.3f}",
+                "height": _numero(analise.get("altura_cm"), 10),
+                "width": _numero(analise.get("largura_cm"), 15),
+                "depth": _numero(analise.get("comprimento_cm"), 20)}
+    if analise.get("gtin"):
+        variante["barcode"] = str(analise["gtin"])[:64]
+    corpo = {"name": {"pt": titulo},
+             "description": {"pt": analise.get("descricao_html", "")},
+             "images": [{"src": url} for url in imagens[:9]],
+             "variants": [variante], "visibility": "hidden",
+             "seo_title": str(analise.get("seo_title") or titulo)[:70],
+             "seo_description": str(analise.get("seo_description") or "")[:320],
+             "tags": str(analise.get("tags") or analise.get("search_terms") or "")[:255]}
+    if analise.get("marca"):
+        corpo["brand"] = str(analise["marca"])[:100]
+    if analise.get("categoria"):
+        try:
+            categorias = requests.get(raiz + "/categories", headers=headers,
+                                     params={"per_page": 200}, timeout=30)
+            lista = categorias.json() if categorias.status_code == 200 else []
+            alvo = str(analise["categoria"]).strip().casefold()
+            for categoria in lista if isinstance(lista, list) else []:
+                nome = categoria.get("name", {}) if isinstance(categoria, dict) else {}
+                nome_pt = nome.get("pt", "") if isinstance(nome, dict) else str(nome)
+                if nome_pt.strip().casefold() == alvo:
+                    corpo["categories"] = [categoria["id"]]
+                    break
+            if "categories" not in corpo:
+                registrar("ℹ️ Categoria sugerida não correspondeu a uma categoria cadastrada na Nuvemshop; revise no painel.")
+        except requests.RequestException:
+            registrar("ℹ️ Não consegui conferir as categorias da Nuvemshop; revise a categoria no painel.")
+    if analise.get("video_url"):
+        corpo["video_url"] = str(analise["video_url"])[:500]
+    raiz = f"https://api.nuvemshop.com.br/2025-03/{loja_id}"
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json",
+               "User-Agent": "DropAI (https://bot-produtos.onrender.com)"}
+    resposta = requests.post(raiz + "/products", headers=headers, json=corpo, timeout=90)
+    if resposta.status_code not in (200, 201):
+        raise RuntimeError(f"Nuvemshop API ({resposta.status_code}): {resposta.text[:450]}")
+    registrar(f"📝 Nuvemshop: produto {titulo} criado como oculto para revisão; confirme preço, estoque e publique no painel.")
+    return True
+
+
 def processar(job_id, d):
     job = JOBS[job_id]
 
@@ -829,9 +985,21 @@ def processar(job_id, d):
                 return
 
             plataforma = d.get("plataforma", "yampi")
-            if not d.get("loja_url") or not d.get("api_token"):
+            conexao = None
+            if plataforma == "yampi":
+                if not d.get("loja_url") or not d.get("api_token") or not d.get("api_secret"):
+                    job["status"] = "erro"
+                    reg("Erro: Configure a conexão da Yampi na aba Loja.")
+                    return
+            elif plataforma in ("shopify", "nuvemshop"):
+                conexao = carregar_conexao_loja(d.get("usuario_id"), plataforma)
+                if not conexao:
+                    job["status"] = "erro"
+                    reg(f"Erro: Conecte sua loja {plataforma.title()} na aba Loja antes de importar.")
+                    return
+            else:
                 job["status"] = "erro"
-                reg("Erro: Credenciais da loja não configuradas. Vá em Configurações.")
+                reg("Erro: Plataforma de loja não reconhecida.")
                 return
 
             if d.get("eh_vip"):
@@ -864,6 +1032,14 @@ def processar(job_id, d):
                 reg("A IA não respondeu. Tente novamente em instantes.")
                 return
 
+            # Os valores fornecidos pelo lojista têm prioridade sobre a extração/IA.
+            for chave in ("marca", "categoria", "gtin", "ncm", "garantia_meses", "video_url"):
+                if d.get(chave) not in (None, ""):
+                    analise[chave] = d[chave]
+            if _numero(analise.get("garantia_meses"), 0, minimo=0.01) > 0:
+                analise["descricao_html"] = (analise.get("descricao_html", "") +
+                    f"<p><strong>Garantia:</strong> {int(float(analise['garantia_meses']))} meses.</p>")
+
             job["resultado_ia"] = analise
             reg("Novo Título Criado: " + str(analise.get("titulo")))
 
@@ -883,13 +1059,19 @@ def processar(job_id, d):
                     d["loja_url"], d["api_token"], d["api_secret"], analise,
                     d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg
                 )
+            elif plataforma == "shopify":
+                ok = cadastrar_shopify(conexao["store_id"], conexao["access_token"], analise,
+                    d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg)
+            elif plataforma == "nuvemshop":
+                ok = cadastrar_nuvemshop(conexao["store_id"], conexao["access_token"], analise,
+                    d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg)
 
             if ok:
                 job["status"] = "ok"
                 try:
                     db_run(
-                        "INSERT INTO meus_produtos (usuario_email, tipo, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado) VALUES (?, 'fisico', ?, ?, ?, ?, ?, ?, ?)",
-                        [d["usuario_email"], analise.get("titulo", d["nome"]),
+                        "INSERT INTO meus_produtos (usuario_email, tipo, plataforma, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado) VALUES (?, 'fisico', ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [d["usuario_email"], plataforma, analise.get("titulo", d["nome"]),
                          analise.get("descricao_html", d["descricao"]), d["custo"], venda,
                          job.get("link_origem", ""), (imagens[0] if imagens else ""), time.time()]
                     )
@@ -1006,14 +1188,52 @@ def requer_login(f):
     return interno
 
 
+def cifrar_credenciais_loja(dados):
+    bruto = json.dumps(dados, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return CIFRADOR_LOJAS.encrypt(bruto).decode("ascii")
+
+
+def decifrar_credenciais_loja(valor):
+    try:
+        return json.loads(CIFRADOR_LOJAS.decrypt(valor.encode("ascii")).decode("utf-8"))
+    except (InvalidToken, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def salvar_conexao_loja(user_id, plataforma, loja_id, credenciais):
+    db_run("""INSERT INTO store_connections (user_id, platform, store_id, credentials_enc, status)
+             VALUES (?, ?, ?, ?, 'active')
+             ON CONFLICT(user_id, platform, store_id) DO UPDATE SET
+             credentials_enc = excluded.credentials_enc, status = 'active'""",
+           [user_id, plataforma, loja_id, cifrar_credenciais_loja(credenciais)])
+
+
+def carregar_conexao_loja(user_id, plataforma):
+    linhas = db_run("SELECT store_id, credentials_enc FROM store_connections WHERE user_id = ? AND platform = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+                    [user_id, plataforma], fetch=True)
+    if not linhas:
+        return None
+    dados = decifrar_credenciais_loja(linhas[0][1])
+    return ({"store_id": linhas[0][0], **dados} if isinstance(dados, dict) else None)
+
+
+def conexao_publica(user_id, plataforma):
+    linhas = db_run("SELECT store_id FROM store_connections WHERE user_id = ? AND platform = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+                    [user_id, plataforma], fetch=True)
+    return linhas[0][0] if linhas else ""
+
+
 def mascarar_telefone(tel):
     return ("+" + tel[:2] + " ••••• ••" + tel[-2:]) if tel else ""
 
 
 def usuario_publico(u):
     # nunca devolve senha, token nem secret para o navegador
+    plataforma = u["plataforma"] or "yampi"
+    conectada = (bool(u["loja_url"] and u["api_token"] and u["api_secret"]) if plataforma == "yampi"
+                 else bool(conexao_publica(u["id"], plataforma)))
     return {"email": u["email"], "plataforma": u["plataforma"], "loja_url": u["loja_url"],
-            "loja_configurada": bool(u["loja_url"] and u["api_token"]), "eh_vip": u["eh_vip"],
+            "loja_configurada": conectada, "eh_vip": u["eh_vip"],
             "telefone_mascarado": mascarar_telefone(u["telefone"]), "telefone_verificado": u["telefone_verificado"]}
 
 
@@ -1346,12 +1566,184 @@ def salvar_config():
     api_token = str(d.get("api_token", "")).strip() or u["api_token"]
     api_secret = str(d.get("api_secret", "")).strip() or u["api_secret"]
 
+    if plataforma not in ("yampi", "shopify", "nuvemshop"):
+        return jsonify(erro="Selecione uma plataforma válida."), 400
+    if plataforma in ("shopify", "nuvemshop"):
+        identificador = conexao_publica(u["id"], plataforma)
+        if not identificador:
+            return jsonify(erro=f"Conecte sua conta {plataforma.title()} pelo botão de autorização antes de selecioná-la."), 400
+        db_run("UPDATE usuarios SET plataforma = ?, loja_url = ? WHERE email = ?", [plataforma, identificador, u["email"]])
+        return jsonify(sucesso=True, plataforma=plataforma, loja_url=identificador)
     if not ALIAS_RE.match(loja_url):
         return jsonify(erro="Alias da loja inválido (use letras, números, - ou _)."), 400
 
     db_run("UPDATE usuarios SET plataforma = ?, loja_url = ?, api_token = ?, api_secret = ? WHERE email = ?",
            [plataforma, loja_url, api_token, api_secret, u["email"]])
     return jsonify(sucesso=True)
+
+
+@app.route("/api/lojas/conexoes")
+@requer_login
+def listar_conexoes_loja():
+    u = g.usuario
+    return jsonify(
+        plataforma_ativa=u["plataforma"],
+        yampi=bool(u["loja_url"] and u["api_token"] and u["api_secret"]),
+        shopify={"conectada": bool(conexao_publica(u["id"], "shopify")), "configurada": bool(SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET)},
+        nuvemshop={"conectada": bool(conexao_publica(u["id"], "nuvemshop")), "configurada": bool(NUVEMSHOP_APP_ID and NUVEMSHOP_APP_SECRET)},
+    )
+
+
+def _estado_oauth(plataforma, user_id, loja=""):
+    return SERIALIZADOR_OAUTH.dumps({"p": plataforma, "u": int(user_id), "s": loja, "n": secrets.token_urlsafe(18)})
+
+
+def _ler_estado_oauth(estado, plataforma):
+    try:
+        dados = SERIALIZADOR_OAUTH.loads(estado, max_age=600)
+        if dados.get("p") == plataforma and isinstance(dados.get("u"), int):
+            return dados
+    except (BadSignature, SignatureExpired, AttributeError, TypeError):
+        pass
+    return None
+
+
+@app.route("/conectar/shopify")
+@requer_login
+def iniciar_oauth_shopify():
+    if not (SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET):
+        return "A conexão Shopify ainda precisa ser configurada no painel do DropAI.", 503
+    loja = str(request.args.get("shop", "")).strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", loja):
+        return "Informe o domínio da loja no formato loja.myshopify.com.", 400
+    estado = _estado_oauth("shopify", g.usuario["id"], loja)
+    callback = APP_BASE_URL + "/oauth/shopify/callback"
+    parametros = urlencode({"client_id": SHOPIFY_CLIENT_ID,
+                            "scope": "write_products,write_inventory,read_locations",
+                            "redirect_uri": callback, "state": estado})
+    return redirect(f"https://{loja}/admin/oauth/authorize?{parametros}")
+
+
+def _shopify_callback_hmac_valido(args):
+    recibido = str(args.get("hmac", ""))
+    if not recibido or not SHOPIFY_CLIENT_SECRET:
+        return False
+    mensagem = "&".join(f"{k}={v}" for k, v in sorted(args.items()) if k not in ("hmac", "signature"))
+    esperado = hmac.new(SHOPIFY_CLIENT_SECRET.encode(), mensagem.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(recebido, esperado)
+
+
+@app.route("/oauth/shopify/callback")
+def concluir_oauth_shopify():
+    if not _shopify_callback_hmac_valido(request.args):
+        return "Retorno de autorização Shopify inválido.", 400
+    loja = str(request.args.get("shop", "")).strip().lower()
+    estado = _ler_estado_oauth(request.args.get("state", ""), "shopify")
+    if not estado or estado.get("s") != loja or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", loja):
+        return "A autorização expirou ou não corresponde à loja solicitada. Volte ao DropAI e tente novamente.", 400
+    try:
+        resposta = requests.post(f"https://{loja}/admin/oauth/access_token", json={
+            "client_id": SHOPIFY_CLIENT_ID, "client_secret": SHOPIFY_CLIENT_SECRET,
+            "code": request.args.get("code", "")}, timeout=25)
+        if resposta.status_code != 200 or not resposta.json().get("access_token"):
+            return "A Shopify não concluiu a conexão. Volte ao DropAI e tente novamente.", 502
+        token = resposta.json()["access_token"]
+        salvar_conexao_loja(estado["u"], "shopify", loja, {"access_token": token})
+        db_run("UPDATE usuarios SET plataforma = ?, loja_url = ? WHERE id = ?", ["shopify", loja, estado["u"]])
+    except Exception:
+        return "Não foi possível salvar a conexão Shopify. Tente novamente pelo DropAI.", 500
+    return redirect("/?integracao=shopify")
+
+
+@app.route("/conectar/nuvemshop")
+@requer_login
+def iniciar_oauth_nuvemshop():
+    if not NUVEMSHOP_APP_ID or not NUVEMSHOP_APP_SECRET:
+        return "A conexão Nuvemshop ainda precisa ser configurada no painel do DropAI.", 503
+    estado = _estado_oauth("nuvemshop", g.usuario["id"])
+    return redirect("https://www.nuvemshop.com.br/apps/" + quote(NUVEMSHOP_APP_ID) + "/authorize?" + urlencode({"state": estado}))
+
+
+@app.route("/oauth/nuvemshop/callback")
+def concluir_oauth_nuvemshop():
+    estado = _ler_estado_oauth(request.args.get("state", ""), "nuvemshop")
+    codigo = str(request.args.get("code", ""))
+    if not estado or not codigo:
+        return "A autorização expirou ou foi cancelada. Volte ao DropAI e tente novamente.", 400
+    try:
+        resposta = requests.post("https://www.nuvemshop.com.br/apps/authorize/token", json={
+            "client_id": NUVEMSHOP_APP_ID, "client_secret": NUVEMSHOP_APP_SECRET,
+            "grant_type": "authorization_code", "code": codigo}, timeout=25)
+        dados = resposta.json() if resposta.content else {}
+        if resposta.status_code != 200 or not dados.get("access_token") or not dados.get("user_id"):
+            return "A Nuvemshop não concluiu a conexão. Verifique o cadastro do app e tente novamente.", 502
+        loja_id = str(dados["user_id"])
+        salvar_conexao_loja(estado["u"], "nuvemshop", loja_id, {"access_token": dados["access_token"]})
+        db_run("UPDATE usuarios SET plataforma = ?, loja_url = ? WHERE id = ?", ["nuvemshop", loja_id, estado["u"]])
+    except Exception:
+        return "Não foi possível salvar a conexão Nuvemshop. Tente novamente pelo DropAI.", 500
+    return redirect("/?integracao=nuvemshop")
+
+
+@app.route("/api/videos/buscar", methods=["POST"])
+@requer_login
+def buscar_videos_produto():
+    if not YOUTUBE_API_KEY:
+        return jsonify(erro="Busca de vídeos ainda não configurada no DropAI."), 503
+    d = request.get_json(force=True, silent=True) or {}
+    termo = re.sub(r"\s+", " ", str(d.get("termo", "")).strip())[:180]
+    if len(termo) < 3:
+        return jsonify(erro="Informe o nome do produto para procurar vídeos."), 400
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/search", params={
+            "part": "snippet", "type": "video", "q": termo, "maxResults": 6,
+            "videoEmbeddable": "true", "safeSearch": "strict", "regionCode": "BR",
+            "relevanceLanguage": "pt", "key": YOUTUBE_API_KEY}, timeout=20)
+        dados = r.json()
+        if r.status_code != 200:
+            return jsonify(erro="A busca do YouTube falhou. Confira a configuração da API."), 502
+        videos = []
+        for item in dados.get("items", []):
+            ident = item.get("id", {}).get("videoId")
+            snippet = item.get("snippet", {})
+            if ident:
+                videos.append({"url": "https://www.youtube.com/watch?v=" + ident,
+                               "titulo": snippet.get("title", "Vídeo"),
+                               "canal": snippet.get("channelTitle", ""),
+                               "imagem": snippet.get("thumbnails", {}).get("medium", {}).get("url", "")})
+        return jsonify(videos=videos)
+    except requests.RequestException:
+        return jsonify(erro="Não foi possível consultar o YouTube agora."), 502
+
+
+@app.route("/api/imagens/buscar", methods=["POST"])
+@requer_login
+def buscar_imagens_produto():
+    if not SERPAPI_API_KEY:
+        return jsonify(erro="A busca de imagens ainda precisa de uma chave SERPAPI_API_KEY no Render."), 503
+    d = request.get_json(force=True, silent=True) or {}
+    termo = re.sub(r"\s+", " ", str(d.get("termo", "")).strip())[:180]
+    if len(termo) < 3:
+        return jsonify(erro="Informe o nome exato do produto para buscar imagens."), 400
+    try:
+        r = requests.get("https://serpapi.com/search.json", params={
+            "engine": "google_images", "q": termo, "gl": "br", "hl": "pt-br",
+            "api_key": SERPAPI_API_KEY}, timeout=25)
+        dados = r.json()
+        if r.status_code != 200 or dados.get("error"):
+            return jsonify(erro="A busca de imagens falhou. Confira a configuração do serviço."), 502
+        candidatos = []
+        for item in dados.get("images_results", [])[:12]:
+            url = str(item.get("original") or "").strip()
+            if not url or not url_publica_segura(url):
+                continue
+            candidatos.append({"url": url, "titulo": str(item.get("title") or "Imagem do produto")[:160],
+                               "origem": str(item.get("source") or "")[:100],
+                               "pagina": str(item.get("link") or "")[:600],
+                               "miniatura": str(item.get("thumbnail") or "")[:600]})
+        return jsonify(imagens=candidatos)
+    except requests.RequestException:
+        return jsonify(erro="Não foi possível consultar a busca de imagens agora."), 502
 
 
 # ---------------------------------------------------------------------------
@@ -1371,8 +1763,11 @@ def novo():
         return jsonify(erro="Preço de custo inválido"), 400
     if not nome or custo <= 0:
         return jsonify(erro="Informe o nome e um custo maior que zero"), 400
-    if not u["loja_url"] or not u["api_token"]:
-        return jsonify(erro="Configure sua loja na aba Loja antes de importar."), 400
+    plataforma = u["plataforma"] or "yampi"
+    if plataforma == "yampi" and (not u["loja_url"] or not u["api_token"] or not u["api_secret"]):
+        return jsonify(erro="Configure sua loja Yampi na aba Loja antes de importar."), 400
+    if plataforma in ("shopify", "nuvemshop") and not conexao_publica(u["id"], plataforma):
+        return jsonify(erro=f"Conecte sua loja {plataforma.title()} na aba Loja antes de importar."), 400
 
     link_origem = str(d.get("link_origem", "")).strip()
     if link_origem and not url_publica_segura(link_origem):
@@ -1399,6 +1794,16 @@ def novo():
     sufixo_sku = str(int(time.time() * 1000))[-6:]
     sku_informado = str(d.get("sku", "")).strip()[:40]
     sku = f"{sku_informado}-{sufixo_sku}" if sku_informado else f"AUTO-{sufixo_sku}"
+    try:
+        garantia_meses = max(0, min(int(d.get("garantia_meses") or 0), 120))
+    except (TypeError, ValueError):
+        garantia_meses = 0
+
+    video_url = str(d.get("video_url", "")).strip()
+    if video_url:
+        p_video = urlparse(video_url)
+        if p_video.scheme != "https" or (p_video.hostname or "").lower() not in ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"):
+            return jsonify(erro="Escolha um link seguro do YouTube."), 400
 
     # limpa tarefas antigas da memória
     agora = time.time()
@@ -1421,8 +1826,15 @@ def novo():
         "loja_url": u["loja_url"],
         "api_token": u["api_token"],
         "api_secret": u["api_secret"],
+        "usuario_id": u["id"],
         "usuario_email": u["email"],
         "eh_vip": u["eh_vip"],   # vem do servidor, não do navegador
+        "marca": str(d.get("marca", "")).strip()[:120],
+        "categoria": str(d.get("categoria", "")).strip()[:120],
+        "gtin": re.sub(r"\s+", "", str(d.get("gtin", "")))[:64],
+        "ncm": re.sub(r"\D", "", str(d.get("ncm", "")))[:16],
+        "garantia_meses": garantia_meses,
+        "video_url": video_url,
     }
 
     threading.Thread(target=processar, args=(job_id, dados), daemon=True).start()
@@ -1466,10 +1878,10 @@ def status(job_id):
 @requer_login
 def meus_produtos():
     linhas = db_run(
-        "SELECT id, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado FROM meus_produtos WHERE usuario_email = ? ORDER BY criado DESC LIMIT 50",
+        "SELECT id, plataforma, nome, descricao, custo, preco_venda, link_origem, imagem_url, criado FROM meus_produtos WHERE usuario_email = ? ORDER BY criado DESC LIMIT 50",
         [g.usuario["email"]], fetch=True
     ) or []
-    chaves = ("id", "nome", "descricao", "custo", "preco_venda", "link_origem", "imagem_url", "criado")
+    chaves = ("id", "plataforma", "nome", "descricao", "custo", "preco_venda", "link_origem", "imagem_url", "criado")
     return jsonify(produtos=[dict(zip(chaves, linha)) for linha in linhas])
 
 
