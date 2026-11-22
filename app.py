@@ -847,7 +847,7 @@ def processar(job_id, d):
             if link:
                 reg("🔎 Lendo a página do produto original...")
                 reg("🔗 Origem: " + link)
-                pagina = extrair_dados_da_pagina(link, reg, d.get("nome", ""))
+                pagina = extrair_dados_da_pagina(link, reg)
                 texto_origem = pagina["texto"]
                 imagens.extend(pagina["imagens"])
                 if texto_origem:
