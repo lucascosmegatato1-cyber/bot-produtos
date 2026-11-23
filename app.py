@@ -807,7 +807,7 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
         "skus": [sku_corpo],
     }
     if not brand_id:
-        raise RuntimeError(f"Não foi possível localizar ou criar a marca obrigatória '{marca}' na Yampi.")
+        raise RuntimeError(f"Não foi possível localizar ou criar a marca obrigatória '{marca}' na Yampi. Resposta da API ({r_brand.status_code}): {r_brand.text[:240]}")
     r = requests.post(base_yampi + "/products", headers=headers, json=corpo, timeout=120)
     if r.status_code not in (200, 201):
         if r.status_code == 422 and ("slug" in r.text or '"name"' in r.text):
