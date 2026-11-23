@@ -941,7 +941,7 @@ def cadastrar_nuvemshop(loja_id, token, analise, custo, venda, sku, imagens, est
         corpo["brand"] = str(analise["marca"])[:100]
     if analise.get("categoria"):
         try:
-            categorias = requests.get(raiz + "/categories", headers=headers,
+            categorias = requests.get(f"https://api.nuvemshop.com.br/2025-03/{loja_id}/categories", headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "DropAI (https://bot-produtos.onrender.com)"},
                                      params={"per_page": 200}, timeout=30)
             lista = categorias.json() if categorias.status_code == 200 else []
             alvo = str(analise["categoria"]).strip().casefold()
