@@ -766,7 +766,7 @@ def cadastrar_yampi(alias, user_token, secret_key, analise, custo, venda, sku, i
                     brand_id = m["id"]
                     break
         if not brand_id:
-            r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": marca, "active": True}, timeout=60)
+            r_brand = requests.post(base_yampi + "/brands", headers=headers, json={"name": marca, "active": True, "featured": "false"}, timeout=60)
             if r_brand.status_code in (200, 201):
                 res_b = r_brand.json()
                 brand_id = res_b.get("data", {}).get("id") or res_b.get("id")
