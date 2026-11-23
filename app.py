@@ -305,12 +305,12 @@ def listar_modelos():
             for m in r.json().get("models", []):
                 nome = m["name"].replace("models/", "")
                 ok_metodo = "generateContent" in m.get("supportedGenerationMethods", [])
-                lixo = any(x in nome for x in ("image", "tts", "live", "audio", "robotics"))
+                lixo = any(x in nome for x in ("image", "tts", "live", "audio", "robotics", "2.5"))
                 if ok_metodo and "flash" in nome and not lixo:
                     achados.append(nome)
     except Exception:
         pass
-    lista = [MODELO_PREFERIDO] + [n for n in achados if n != MODELO_PREFERIDO]
+    lista = [MODELO_PREFERIDO] + [n for alvo in ("gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite") for n in achados if n == alvo and n != MODELO_PREFERIDO] + [n for n in achados if n != MODELO_PREFERIDO and n not in ("gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")]
     if achados:
         MODELOS = lista[:5]
         return MODELOS
@@ -354,7 +354,7 @@ def chamar_ia(corpo, registrar, timeout_val=120):
                 if r.status_code in (400, 404):
                     break
             if tentativa == 1:
-                time.sleep(5)
+                time.sleep(min(30, 2 ** (tentativa + 1)) + random.random())
     return None
 
 
@@ -903,12 +903,12 @@ def cadastrar_shopify(loja, token, analise, custo, venda, sku, imagens, estoque,
         if locais and item:
             qty = max(0, int(estoque))
             inventory = _shopify_graphql(loja, token, """
-                mutation ActivateStock($inventoryItemId: ID!, $locationId: ID!, $available: Int!, $key: String!) {
-                  inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId,
-                    available: $available) @idempotent(key: $key) { userErrors { field message } }
+                mutation AdjustStock($input: InventoryAdjustQuantitiesInput!, $key: String!) {
+                  inventoryAdjustQuantities(input: $input) @idempotent(key: $key) {
+                    userErrors { field message } }
                 }
-            """, {"inventoryItemId": item, "locationId": locais[0]["id"], "available": qty, "key": str(uuid.uuid4())})
-            errs = (inventory.get("inventoryActivate") or {}).get("userErrors", [])
+            """, {"input": {"reason": "correction", "name": "available", "changes": [{"inventoryItemId": item, "locationId": locais[0]["id"], "delta": qty, "changeFromQuantity": 0}]}, "key": str(uuid.uuid4())})
+            errs = (inventory.get("inventoryAdjustQuantities") or {}).get("userErrors", [])
             if errs:
                 registrar("⚠️ Produto criado, mas o estoque da Shopify precisa de revisão: " + json.dumps(errs, ensure_ascii=False)[:300])
             else:
