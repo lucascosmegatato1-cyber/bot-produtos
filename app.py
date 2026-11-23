@@ -903,11 +903,11 @@ def cadastrar_shopify(loja, token, analise, custo, venda, sku, imagens, estoque,
         if locais and item:
             qty = max(0, int(estoque))
             inventory = _shopify_graphql(loja, token, """
-                mutation ActivateStock($inventoryItemId: ID!, $locationId: ID!, $available: Int!, $onHand: Int!, $key: String!) {
+                mutation ActivateStock($inventoryItemId: ID!, $locationId: ID!, $available: Int!, $key: String!) {
                   inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId,
-                    available: $available, onHand: $onHand) @idempotent(key: $key) { userErrors { field message } }
+                    available: $available) @idempotent(key: $key) { userErrors { field message } }
                 }
-            """, {"inventoryItemId": item, "locationId": locais[0]["id"], "available": qty, "onHand": qty, "key": str(uuid.uuid4())})
+            """, {"inventoryItemId": item, "locationId": locais[0]["id"], "available": qty, "key": str(uuid.uuid4())})
             errs = (inventory.get("inventoryActivate") or {}).get("userErrors", [])
             if errs:
                 registrar("⚠️ Produto criado, mas o estoque da Shopify precisa de revisão: " + json.dumps(errs, ensure_ascii=False)[:300])
