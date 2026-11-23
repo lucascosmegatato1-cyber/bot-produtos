@@ -320,13 +320,13 @@ def listar_modelos():
 MODELO_OK = None  # último modelo que respondeu: é tentado primeiro nas próximas chamadas
 
 
-def chamar_ia(corpo, registrar, timeout_val=120):
+def chamar_ia(corpo, registrar, timeout_val=30):
     global MODELO_OK
     modelos = list(listar_modelos())
     if MODELO_OK in modelos:
         modelos.remove(MODELO_OK)
         modelos.insert(0, MODELO_OK)
-    for modelo in modelos:
+    for modelo in modelos[:2]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
         headers = {"x-goog-api-key": CHAVE_GOOGLE, "Content-Type": "application/json"}
         for tentativa in (1, 2):
