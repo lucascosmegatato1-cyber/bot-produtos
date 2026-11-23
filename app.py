@@ -15,7 +15,7 @@ import base64
 from html import unescape
 from html.parser import HTMLParser
 from functools import wraps
-from urllib.parse import urlparse, urljoin, urlencode, quote
+from urllib.parse import urlparse, urljoin, urlencode, quote, parse_qsl
 
 import requests
 from flask import Flask, request, jsonify, Response, send_file, g, redirect
@@ -474,12 +474,26 @@ def _urls_de_imagem(valor):
 
 
 def _urls_srcset(valor):
-    urls = []
+    candidatos = []
     for item in str(valor or "").split(","):
         campos = item.strip().split()
-        if campos:
-            urls.append(campos[0])
-    return urls
+        if not campos:
+            continue
+        descritor = campos[-1] if len(campos) == 2 else ""
+        tamanho = re.fullmatch(r"(\d+(?:\.\d+)?)[wx]", descritor)
+        candidatos.append((float(tamanho[1]) if tamanho else 0, campos[0]))
+    return [url for _, url in sorted(candidatos, key=lambda item: -item[0])]
+
+
+def _chave_imagem(url):
+    """Agrupa tamanhos da mesma foto, preservando os parâmetros que identificam o arquivo."""
+    partes = urlparse(url)
+    parametros = parse_qsl(partes.query, keep_blank_values=True)
+    identidade = tuple(sorted(
+        (chave, valor) for chave, valor in parametros
+        if not (chave.lower() in ("width", "height", "w", "h") and valor.isdecimal())
+    ))
+    return partes.scheme, partes.netloc, partes.path, partes.params, identidade
 
 
 class _ColetorProduto(HTMLParser):
@@ -508,9 +522,11 @@ class _ColetorProduto(HTMLParser):
                 score += 3
             for chave in ("data-zoom-image", "data-large_image", "data-original", "data-lazy-src", "data-src", "data-image", "src"):
                 if a.get(chave):
-                    self.imagens.append((score, a[chave]))
+                    prioridade = 2 if chave in ("data-zoom-image", "data-large_image", "data-original") else 0
+                    self.imagens.append((score, prioridade, a[chave]))
             for chave in ("data-srcset", "srcset"):
-                self.imagens.extend((score + 1, url) for url in _urls_srcset(a.get(chave)))
+                for indice, url in enumerate(_urls_srcset(a.get(chave))):
+                    self.imagens.append((score, 1 if indice == 0 else -1, url))
 
 
 def _texto_visivel(html):
@@ -540,10 +556,10 @@ def _buscar_url_publica(url, headers, timeout=20, stream=False, max_redirecionam
 def _extrair_shopify(url):
     """Obtém a galeria e descrição pelo endpoint público de produto Shopify, quando disponível."""
     p = urlparse(url)
-    m = re.search(r"/products/([^/?#]+)", p.path, re.I)
+    m = re.search(r"(/(?:[a-z]{2}(?:-[a-z]{2})?/)?products/[^/]+)/?$", p.path, re.I)
     if not m:
         return None
-    endpoint = f"{p.scheme}://{p.netloc}/products/{m.group(1)}.js"
+    endpoint = f"{p.scheme}://{p.netloc}{m.group(1)}.js"
     try:
         r = _buscar_url_publica(endpoint, {"User-Agent": UA_NAVEGADOR, "Accept": "application/json"}, timeout=12)
         if r.status_code != 200 or "json" not in r.headers.get("Content-Type", "").lower():
@@ -639,14 +655,13 @@ def extrair_dados_da_pagina(url, registrar):
         imagens.extend(_urls_de_imagem(prod.get("image")))
 
     # O JSON público Shopify costuma trazer todas as fotos e o texto completo do anúncio.
-    if len(imagens) < 2 or not any("Descrição do produto:" in p for p in partes):
-        shopify = _extrair_shopify(url_final)
-        if shopify:
-            imagens.extend(shopify["imagens"])
-            partes.extend(shopify["texto"].splitlines())
+    shopify = _extrair_shopify(url_final)
+    if shopify:
+        imagens = shopify["imagens"] + imagens
+        partes.extend(shopify["texto"].splitlines())
 
     # Complementa com todas as imagens de galeria e lazy-load do HTML.
-    imagens.extend(url for _, url in sorted(parser.imagens, key=lambda item: -item[0]))
+    imagens.extend(url for _, _, url in sorted(parser.imagens, key=lambda item: (-item[0], -item[1])))
     corpo = _texto_visivel(html)
     if corpo and not any("Descrição do produto:" in p or "Descrição original:" in p for p in partes):
         partes.append("Texto visível do anúncio: " + corpo[:3000])
@@ -672,7 +687,7 @@ def extrair_dados_da_pagina(url, registrar):
 
 def validar_imagens(urls, registrar, limite=MAX_IMAGENS):
     """Confirma URLs de imagem públicas e acessíveis antes de enviar à plataforma da loja."""
-    validas = []
+    validas, vistas = [], set()
     for u in urls:
         if len(validas) >= limite:
             break
@@ -680,6 +695,9 @@ def validar_imagens(urls, registrar, limite=MAX_IMAGENS):
         if not u:
             continue
         try:
+            chave = _chave_imagem(u)
+            if chave in vistas:
+                continue
             r = _buscar_url_publica(u, {"User-Agent": UA_NAVEGADOR}, timeout=15, stream=True)
             tipo = r.headers.get("Content-Type", "").lower()
             tamanho = int(r.headers.get("Content-Length") or 0)
@@ -692,8 +710,10 @@ def validar_imagens(urls, registrar, limite=MAX_IMAGENS):
             final = getattr(r, "url_final_dropai", u)
             r.close()
             if r.status_code == 200 and tipo.startswith("image/") and 0 < tamanho < 10_000_000:
-                if final not in validas:
+                chave_final = _chave_imagem(final)
+                if chave_final not in vistas:
                     validas.append(final)
+                vistas.update((chave, chave_final))
             else:
                 registrar("Uma foto da origem foi ignorada por não abrir como imagem ou ultrapassar 10 MB.")
         except Exception:
@@ -1963,4 +1983,5 @@ def service_worker():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
