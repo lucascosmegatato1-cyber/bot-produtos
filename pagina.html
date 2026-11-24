@@ -600,6 +600,8 @@
               <input type="text" id="sku" placeholder="Deixe em branco para auto gerar...">
             </div>
 
+            <button type="button" class="btn-submit" id="btn-previa-origem" onclick="carregarPreviaOrigem()">Conferir anúncio original</button>
+            <section id="previa-origem" aria-live="polite" hidden></section>
             <button type="button" class="btn-submit" id="btn-enviar" onclick="enviarProduto()">
               <div class="spinner" id="spinner-enviar"></div>
               <span>🚀 Importar e Cadastrar Produto</span>
@@ -1005,12 +1007,88 @@
       document.getElementById('calc-venda').innerText = 'R$ ' + venda.toFixed(2).replace('.', ',');
     }
 
-    function enviarProduto() {
+    let previaOrigem = null;
+
+    async function carregarPreviaOrigem() {
+      const campo = document.getElementById('nome');
+      const link = campo.value.trim();
+      const painel = document.getElementById('previa-origem');
+      const botao = document.getElementById('btn-previa-origem');
+      painel.hidden = false;
+      previaOrigem = null;
+      if (!/^https?:\/\//i.test(link)) {
+        painel.textContent = 'Cole o link original no campo de produto.';
+        return;
+      }
+      botao.disabled = true;
+      painel.textContent = 'Lendo o anúncio original…';
+      try {
+        const {body} = await api('/api/produtos/previa', {link});
+        if (campo.value.trim() !== link) {
+          painel.textContent = 'O link mudou. Gere uma nova prévia.';
+          return;
+        }
+        if (body.erro) {
+          painel.textContent = body.erro;
+          return;
+        }
+        previaOrigem = {link, imagens: []};
+        const titulo = document.createElement('h3');
+        titulo.textContent = body.titulo;
+        const detalhes = document.createElement('p');
+        const variante = body.variante ? 'Variante no link: ' + body.variante : 'Variante não especificada no link';
+        const estoque = body.estoque === null ? 'Estoque não informado' : 'Estoque da origem: ' + body.estoque;
+        detalhes.textContent = variante + ' · ' + estoque;
+        const ajuda = document.createElement('p');
+        ajuda.textContent = body.imagens.length
+          ? 'Mantenha marcadas as fotos autorizadas. Ajuste o estoque no campo acima, se necessário.'
+          : 'Nenhuma foto validada. Você pode incluir links diretos no campo de imagens.';
+        const fotos = document.createElement('div');
+        fotos.style.cssText = 'display:flex;flex-wrap:wrap;gap:12px';
+        for (const [indice, url] of body.imagens.entries()) {
+          const rotulo = document.createElement('label');
+          const caixa = document.createElement('input');
+          caixa.type = 'checkbox';
+          caixa.checked = true;
+          const imagem = document.createElement('img');
+          imagem.src = url;
+          imagem.alt = '';
+          imagem.width = 70;
+          imagem.height = 70;
+          imagem.style.objectFit = 'contain';
+          rotulo.append(caixa, imagem, 'Foto ' + (indice + 1));
+          fotos.append(rotulo);
+          previaOrigem.imagens.push({url, caixa});
+        }
+        const salvar = document.createElement('button');
+        salvar.type = 'button';
+        salvar.className = 'btn-submit';
+        salvar.textContent = 'Salvar como rascunho';
+        salvar.onclick = () => enviarProduto(true);
+        painel.replaceChildren(titulo, detalhes, ajuda, fotos, salvar);
+      } catch {
+        painel.textContent = 'Falha ao carregar a prévia. Tente novamente.';
+      } finally {
+        botao.disabled = false;
+      }
+    }
+
+    function enviarProduto(comPrevia = false) {
       const nome = document.getElementById('nome').value.trim();
       const descricao = document.getElementById('descricao').value.trim();
       const custo = document.getElementById('custo').value.trim();
       const sku = document.getElementById('sku').value.trim();
-      const imagens = document.getElementById('imagens').value.trim();
+      const btn = document.getElementById('btn-enviar');
+      if (btn.disabled) return;
+      if (comPrevia && (!previaOrigem || previaOrigem.link !== nome)) {
+        alert('Gere uma nova prévia para o link atual.');
+        return;
+      }
+      const imagensManuais = document.getElementById('imagens').value.trim();
+      const imagens = comPrevia
+        ? [...previaOrigem.imagens.filter(f => f.caixa.checked).map(f => f.url),
+           ...imagensManuais.split(/[\s,]+/).filter(url => url && !previaOrigem.imagens.some(f => f.url === url))].join('\n')
+        : imagensManuais;
       const estoque = document.getElementById('estoque').value.trim();
       const peso = document.getElementById('peso').value.trim();
       const marca = document.getElementById('marca').value.trim();
@@ -1025,7 +1103,6 @@
         return;
       }
 
-      const btn = document.getElementById('btn-enviar');
       const spinner = document.getElementById('spinner-enviar');
       btn.disabled = true;
       spinner.style.display = 'block';
@@ -1037,7 +1114,7 @@
       document.getElementById('preview-box').style.display = 'none';
       document.getElementById('source-link-box').style.display = 'none';
 
-      api('/api/produtos', {nome, descricao, custo, sku, imagens, estoque, peso, marca, categoria, gtin, ncm, garantia_meses, video_url})
+      api('/api/produtos', {nome, descricao, custo, sku, imagens, estoque, peso, marca, categoria, gtin, ncm, garantia_meses, video_url, link_origem: comPrevia ? previaOrigem.link : '', fotos_revisadas: comPrevia})
       .then(res => {
         if(res.body.erro) {
           alert(res.body.erro);
@@ -1156,6 +1233,17 @@
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         card.append(titulo, dados, link);
+        if (produto.link_produto) {
+          const importar = document.createElement('button');
+          importar.type = 'button';
+          importar.className = 'btn-cadastrar-sugestao';
+          importar.textContent = 'Conferir e importar';
+          importar.onclick = () => {
+            importarSugestao(produto.link_produto, '', '');
+            carregarPreviaOrigem();
+          };
+          card.append(importar);
+        }
         container.appendChild(card);
       }
     }
@@ -1191,5 +1279,6 @@
   </script>
 </body>
 </html>
+
 
 
