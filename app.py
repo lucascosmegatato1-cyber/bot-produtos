@@ -1962,6 +1962,56 @@ def novo():
     return jsonify(id=job_id)
 
 
+ORDENS_PRATELEIRA = {
+    "avaliados": lambda p: (-p["avaliacoes"], -p["nota"]),
+    "nota": lambda p: (-p["nota"], -p["avaliacoes"]),
+    "preco": lambda p: p["preco_observado"],
+}
+
+
+def buscar_ofertas_prateleira(nicho, ordem):
+    with requests.get("https://serpapi.com/search.json", params={
+        "engine": "google_shopping", "q": nicho, "gl": "br", "hl": "pt",
+        "api_key": SERPAPI_API_KEY,
+    }, timeout=25) as resposta:
+        resposta.raise_for_status()
+        dados = resposta.json()
+    if dados.get("error"):
+        raise ValueError("Busca de ofertas indisponível")
+
+    ofertas, vistos = [], set()
+    for item in dados.get("shopping_results", []):
+        if not isinstance(item, dict):
+            continue
+        nome = str(item.get("title") or "").strip()
+        url = str(item.get("product_link") or item.get("link") or "").strip()
+        try:
+            origem = urlparse(url)
+            nota = float(item.get("rating") or 0)
+            avaliacoes = int(item.get("reviews") or 0)
+            preco = float(item.get("extracted_price") or 0)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if not nome or origem.scheme != "https" or not origem.hostname or origem.username or origem.password:
+            continue
+        if ordem in ("avaliados", "nota") and not (0 < nota <= 5 and avaliacoes > 0):
+            continue
+        if ordem == "preco" and not (0 < preco < float("inf")):
+            continue
+        if url in vistos:
+            continue
+        vistos.add(url)
+        ofertas.append({
+            "nome": nome[:300],
+            "fonte": str(item.get("source") or "Google Shopping")[:160],
+            "link_consulta": url,
+            "nota": nota if 0 < nota <= 5 and avaliacoes > 0 else None,
+            "avaliacoes": avaliacoes if 0 < nota <= 5 and avaliacoes > 0 else None,
+            "preco_observado": preco if 0 < preco < float("inf") else None,
+        })
+    return sorted(ofertas, key=ORDENS_PRATELEIRA[ordem])[:20]
+
+
 @app.route("/api/sugerir", methods=["POST"])
 @requer_login
 def sugerir():
@@ -1977,6 +2027,18 @@ def sugerir():
     if limite_excedido("sug:" + g.usuario["email"], 30, 3600):
         return jsonify(erro="Limite de pesquisas por hora atingido."), 429
     contar_tentativa("sug:" + g.usuario["email"])
+
+    ordem = d.get("ordem", "ideias")
+    if ordem != "ideias":
+        if not isinstance(ordem, str) or ordem not in ORDENS_PRATELEIRA:
+            return jsonify(erro="Selecione um filtro válido."), 400
+        if not SERPAPI_API_KEY:
+            return jsonify(erro="Os filtros de ofertas precisam da SERPAPI_API_KEY no Render."), 503
+        try:
+            produtos = buscar_ofertas_prateleira(nicho, ordem)
+        except (requests.RequestException, ValueError):
+            return jsonify(erro="A pesquisa de ofertas está indisponível no momento."), 502
+        return jsonify(produtos=produtos, ofertas=True, consultado_em=int(time.time()))
 
     logs = []
     res = sugerir_tendencias(nicho, logs.append, lote)
@@ -2031,6 +2093,7 @@ def service_worker():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
