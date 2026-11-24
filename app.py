@@ -15,7 +15,7 @@ import base64
 from html import escape, unescape
 from html.parser import HTMLParser
 from functools import wraps
-from urllib.parse import urlparse, urljoin, urlencode, quote, parse_qsl
+from urllib.parse import urlparse, urljoin, urlencode, quote, parse_qsl, parse_qs
 
 import requests
 from flask import Flask, request, jsonify, Response, send_file, g, redirect
@@ -581,6 +581,54 @@ def _buscar_url_publica(url, headers, timeout=20, stream=False, max_redirecionam
     raise ValueError("redirecionamentos demais")
 
 
+def _quantidade_explicita(valor):
+    if isinstance(valor, dict):
+        valor = valor.get("value")
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
+    if not re.fullmatch(r"[0-9]{1,6}", str(valor)):
+        return None
+    quantidade = int(valor)
+    return quantidade if quantidade <= 100000 else None
+
+
+def _estoque_das_ofertas(ofertas, url):
+    ofertas = ofertas if isinstance(ofertas, list) else [ofertas]
+    if not ofertas or any(not isinstance(o, dict) for o in ofertas):
+        return None
+    variante = parse_qs(urlparse(url).query).get("variant", [None])[0]
+    if variante:
+        ofertas = [o for o in ofertas if isinstance(o.get("url"), str)
+                   and parse_qs(urlparse(o["url"]).query).get("variant") == [variante]]
+    if len(ofertas) != 1:
+        return None
+    oferta = ofertas[0]
+    tipos = oferta.get("@type", [])
+    if any(str(t).rsplit("/", 1)[-1] == "AggregateOffer"
+           for t in (tipos if isinstance(tipos, list) else [tipos])):
+        return None
+    disponibilidade = str(oferta.get("availability") or "").rsplit("/", 1)[-1].casefold()
+    if disponibilidade in ("outofstock", "soldout", "discontinued"):
+        return 0
+    if disponibilidade and disponibilidade not in ("instock", "limitedavailability"):
+        return None
+    return _quantidade_explicita(oferta.get("inventoryLevel"))
+
+
+def _estoque_shopify(dado, url):
+    variantes = dado.get("variants")
+    if not isinstance(variantes, list) or not variantes or any(not isinstance(v, dict) for v in variantes):
+        return None
+    variante = parse_qs(urlparse(url).query).get("variant", [None])[0]
+    if variante:
+        variantes = [v for v in variantes if str(v.get("id")) == variante]
+    if variantes and all(v.get("available") is False for v in variantes):
+        return 0
+    if len(variantes) == 1:
+        return _quantidade_explicita(variantes[0].get("inventory_quantity"))
+    return None
+
+
 def _extrair_shopify(url):
     """Obtém a galeria e descrição pelo endpoint público de produto Shopify, quando disponível."""
     p = urlparse(url)
@@ -603,14 +651,15 @@ def _extrair_shopify(url):
                 if valor:
                     linhas.append(rotulo + ": " + valor)
         return {"imagens": _urls_de_imagem(dado.get("images") or dado.get("image")),
-                "texto": "\n".join(linhas)}
+                "texto": "\n".join(linhas), "estoque": _estoque_shopify(dado, url),
+                "variantes": len(dado.get("variants") or [])}
     except Exception:
         return None
 
 
 def extrair_dados_da_pagina(url, registrar):
     """Extrai fotos da galeria/anúncio e texto original da página do produto."""
-    vazio = {"imagens": [], "texto": ""}
+    vazio = {"imagens": [], "texto": "", "estoque": None}
     if not url_publica_segura(url):
         registrar("Link de origem inválido ou não permitido para leitura.")
         return vazio
@@ -648,6 +697,7 @@ def extrair_dados_da_pagina(url, registrar):
             produtos.extend(_iterar_produtos_jsonld(json.loads(unescape(bloco.strip()))))
         except Exception:
             continue
+    produto_estoque = produtos[0] if len(produtos) == 1 else None
     if len(produtos) > 1:
         caminho_origem = urlparse(url_final).path.rstrip("/").casefold()
         correspondentes = []
@@ -655,7 +705,12 @@ def extrair_dados_da_pagina(url, registrar):
             identificador = str(prod.get("url") or prod.get("@id") or "")
             if identificador and urlparse(urljoin(url_final, identificador)).path.rstrip("/").casefold() == caminho_origem:
                 correspondentes.append(prod)
+        if len(correspondentes) == 1:
+            produto_estoque = correspondentes[0]
         produtos = correspondentes[:1] or produtos[:1]
+    estoque = None
+    if produto_estoque and not produto_estoque.get("hasVariant"):
+        estoque = _estoque_das_ofertas(produto_estoque.get("offers"), url_final)
     for prod in produtos:
         if prod.get("name"):
             partes.append("Nome do produto: " + str(prod["name"]))
@@ -685,6 +740,8 @@ def extrair_dados_da_pagina(url, registrar):
     # O JSON público Shopify costuma trazer todas as fotos e o texto completo do anúncio.
     shopify = _extrair_shopify(url_final)
     if shopify:
+        if shopify["estoque"] is not None or shopify["variantes"] > 1:
+            estoque = shopify["estoque"]
         imagens = shopify["imagens"] + imagens
         partes.extend(shopify["texto"].splitlines())
 
@@ -710,7 +767,7 @@ def extrair_dados_da_pagina(url, registrar):
     tem_descricao = any("Descrição" in parte for parte in texto_final)
     resumo = "descrição coletada" if tem_descricao else "descrição não detectada na página"
     registrar(f"Página lida: {len(imagens_final)} foto(s) encontrada(s); {resumo}.")
-    return {"imagens": imagens_final[:40], "texto": "\n".join(texto_final)[:12000]}
+    return {"imagens": imagens_final[:40], "texto": "\n".join(texto_final)[:12000], "estoque": estoque}
 
 
 def validar_imagens(urls, registrar, limite=MAX_IMAGENS):
@@ -1075,14 +1132,30 @@ def processar(job_id, d):
             if not link and str(d["nome"]).lower().startswith(("http://", "https://")):
                 link = str(d["nome"]).split()[0]
             job["link_origem"] = link
+            estoque = d["estoque"]
+            estoque_origem = None
             if link:
                 reg("🔎 Lendo a página do produto original...")
                 reg("🔗 Origem: " + link)
                 pagina = extrair_dados_da_pagina(link, reg)
+                estoque_origem = pagina.get("estoque")
                 texto_origem = pagina["texto"]
                 imagens.extend(pagina["imagens"])
                 if texto_origem:
                     reg("📄 Informações do produto original coletadas.")
+
+            estoque_sem_confirmacao = estoque is None and bool(link) and estoque_origem is None
+            if estoque is None:
+                if estoque_origem is not None:
+                    estoque = estoque_origem
+                    reg(f"📦 Estoque informado pelo anúncio original: {estoque} unidade(s).")
+                elif link:
+                    estoque = 0
+                    reg("Estoque da origem não informado. Produto criado com estoque zero para revisão.")
+                else:
+                    estoque = max(0, min(ESTOQUE_PADRAO, 100000))
+            else:
+                reg(f"📦 Estoque informado manualmente: {estoque} unidade(s).")
 
             descricao_total = d["descricao"]
             if texto_origem:
@@ -1124,15 +1197,15 @@ def processar(job_id, d):
             if plataforma == "yampi":
                 ok = cadastrar_yampi(
                     d["loja_url"], d["api_token"], d["api_secret"], analise,
-                    d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg,
-                    forcar_rascunho=sem_ia,
+                    d["custo"], venda, d["sku"], imagens, estoque, d.get("peso"), reg,
+                    forcar_rascunho=sem_ia or estoque_sem_confirmacao,
                 )
             elif plataforma == "shopify":
                 ok = cadastrar_shopify(conexao["store_id"], conexao["access_token"], analise,
-                    d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg)
+                    d["custo"], venda, d["sku"], imagens, estoque, d.get("peso"), reg)
             elif plataforma == "nuvemshop":
                 ok = cadastrar_nuvemshop(conexao["store_id"], conexao["access_token"], analise,
-                    d["custo"], venda, d["sku"], imagens, d["estoque"], d.get("peso"), reg)
+                    d["custo"], venda, d["sku"], imagens, estoque, d.get("peso"), reg)
 
             if ok:
                 job["status"] = "ok"
@@ -1896,10 +1969,11 @@ def novo():
 
     # Estoque inicial (padrão vem da variável ESTOQUE_PADRAO)
     try:
-        estoque = int(str(d.get("estoque", "")).strip() or ESTOQUE_PADRAO)
+        estoque_txt = d.get("estoque")
+        estoque_txt = "" if estoque_txt is None else str(estoque_txt).strip()
+        estoque = max(0, min(int(estoque_txt), 100000)) if estoque_txt else None
     except ValueError:
         return jsonify(erro="Estoque inválido"), 400
-    estoque = max(0, min(estoque, 100000))
 
     # Peso opcional em kg (se vazio, usa a estimativa da IA)
     peso_txt = str(d.get("peso", "")).strip().replace(",", ".")
@@ -2093,6 +2167,7 @@ def service_worker():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
