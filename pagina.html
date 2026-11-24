@@ -633,8 +633,17 @@
             <input type="text" id="ia-termo" placeholder="ex: novidades do mercado, gadgets pets, cosméticos...">
           </div>
 
-          <button type="button" class="btn-submit" onclick="carregarTendencias(1)">
-            🔍 Pesquisar com DropAI (20 opções)
+          <div class="form-group">
+            <label for="ia-ordem">Tipo de pesquisa</label>
+            <select id="ia-ordem">
+              <option value="ideias">Ideias da IA</option>
+              <option value="avaliados">Mais avaliados</option>
+              <option value="nota">Melhor nota</option>
+              <option value="preco">Menor preço observado</option>
+            </select>
+          </div>
+          <button type="button" class="btn-submit" id="btn-pesquisar-ia" onclick="carregarTendencias(1)">
+            🔍 Pesquisar com DropAI
           </button>
         </div>
 
@@ -1086,25 +1095,68 @@
     function carregarTendencias(lote) {
       const termo = document.getElementById('ia-termo').value.trim();
       if(!termo) { alert('Digite um termo ou nicho.'); return; }
+      const ordem = document.getElementById('ia-ordem').value;
+      const pesquisar = document.getElementById('btn-pesquisar-ia');
+      if (pesquisar.disabled) return;
+      pesquisar.disabled = true;
       loteAtualNum = lote;
 
       const container = document.getElementById('lista-sugestoes-container');
       container.innerHTML = '<p style="text-align:center; color:var(--text-muted); padding:20px;">DropAI buscando produto(s)...</p>';
       document.getElementById('btn-mais-lotes').style.display = 'none';
 
-      api('/api/sugerir', {nicho: termo, lote: lote}).then(res => {
+      api('/api/sugerir', {nicho: termo, lote: lote, ordem}).then(res => {
         if(res.body.erro) {
           container.innerHTML = '<p style="text-align:center; color:var(--danger);">' + esc(res.body.erro) + '</p>';
           return;
         }
+        if (res.body.ofertas) {
+          renderizarOfertasPrateleira(res.body.produtos, res.body.consultado_em);
+          return;
+        }
         renderizarProdutosPrateleira(res.body.produtos);
         document.getElementById('btn-mais-lotes').style.display = 'block';
+      }).catch(() => {
+        container.textContent = 'Falha ao pesquisar. Tente novamente.';
+      }).finally(() => {
+        pesquisar.disabled = false;
       });
     }
 
     function carregarMaisLotes() {
       loteAtualNum++;
       carregarTendencias(loteAtualNum);
+    }
+
+    function renderizarOfertasPrateleira(produtos, consultadoEm) {
+      const container = document.getElementById('lista-sugestoes-container');
+      const resumo = document.createElement('p');
+      resumo.className = 'sugestao-desc';
+      resumo.textContent = produtos.length
+        ? 'Ofertas consultadas no Google Shopping em ' + new Date(consultadoEm * 1000).toLocaleString('pt-BR') + '. Confira vendedor, variante e preço no resultado.'
+        : 'Nenhuma oferta com os dados exigidos pelo filtro. Tente outro termo ou filtro.';
+      container.replaceChildren(resumo);
+      const moeda = new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'});
+      for (const produto of produtos) {
+        const card = document.createElement('div');
+        card.className = 'sugestao-card';
+        const titulo = document.createElement('div');
+        titulo.className = 'sugestao-titulo';
+        titulo.textContent = produto.nome;
+        const dados = document.createElement('p');
+        dados.className = 'sugestao-desc';
+        const nota = produto.nota === null ? 'Avaliações não informadas' :
+          produto.nota.toLocaleString('pt-BR') + '/5 · ' + produto.avaliacoes.toLocaleString('pt-BR') + ' avaliações';
+        const preco = produto.preco_observado === null ? 'Preço não informado' : moeda.format(produto.preco_observado);
+        dados.textContent = [produto.fonte, nota, preco].join(' · ');
+        const link = document.createElement('a');
+        link.textContent = 'Ver oferta';
+        link.href = produto.link_consulta;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        card.append(titulo, dados, link);
+        container.appendChild(card);
+      }
     }
 
     function renderizarProdutosPrateleira(produtos) {
@@ -1138,3 +1190,4 @@
   </script>
 </body>
 </html>
+
