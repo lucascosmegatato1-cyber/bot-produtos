@@ -585,8 +585,9 @@
 
             <div class="grid-2 form-group">
               <div>
-              <label for="estoque">Estoque real</label>
-              <input type="number" id="estoque" value="0" min="0" inputmode="numeric">
+              <label for="estoque">Estoque inicial (opcional)</label>
+              <input type="number" id="estoque" min="0" max="100000" inputmode="numeric" placeholder="Usar estoque do anúncio" aria-describedby="ajuda-estoque">
+              <small id="ajuda-estoque">Deixe vazio para usar a quantidade divulgada no link. Se a origem não informar o estoque, o produto fica com zero para revisão.</small>
               </div>
               <div>
                 <label for="peso">Peso em kg (opcional)</label>
@@ -1190,4 +1191,5 @@
   </script>
 </body>
 </html>
+
 
